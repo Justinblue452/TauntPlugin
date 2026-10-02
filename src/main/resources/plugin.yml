@@ -1,0 +1,20 @@
+name: TauntPlugin
+version: 1.0.0
+main: com.example.tauntplugin.TauntPlugin
+api-version: '26.3'
+description: 调侃、幽灵、生物吐槽、肝度排行榜、血月、好友、猜数字
+author: YourName
+
+commands:
+  grind:
+    description: 查看肝度排行榜
+    usage: /grind [top|weekly] [数量]
+    aliases: [g, gd]
+  taunt:
+    description: 嘲讽玩家 / 管理自定义嘲讽文案
+    usage: /taunt [玩家名|set|list|remove|clear|help]
+    aliases: [t, ck]
+  friend:
+    description: 好友系统
+    usage: /friend [add|remove|list|tp] [玩家]
+    aliases: [f, fr]

@@ -1,0 +1,49 @@
+# ===== Java / Gradle =====
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+out/
+bin/
+*.class
+*.jar
+*.war
+*.ear
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 运行数据（不要提交）=====
+run/
+logs/
+plugins/
+world/
+world_nether/
+world_the_end/
+server.properties
+ops.json
+whitelist.json
+banned-ips.json
+banned-players.json
+eula.txt
+
+# ===== 构建产物 =====
+/build/
+/target/
+
+# ===== 临时文件 =====
+*.log
+*.tmp
+*.bak
+*~
