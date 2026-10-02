@@ -32,7 +32,7 @@ public class HerobrineManager implements Listener {
     private final SkinFetcher skinFetcher;
     private final Random random = new Random();
 
-    private static final String SKIN_OWNER_UUID = "069a79f4-44e9-4726-a5be-fca90e38aaf5";
+    private static final String SKIN_OWNER_UUID = "f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2";
 
     // 背后随机恐吓
     private static final long HAUNT_CHECK_INTERVAL_MS = 120_000L;

@@ -2,7 +2,7 @@ name: TauntPlugin
 version: 1.0.0
 main: com.example.tauntplugin.TauntPlugin
 api-version: '26.3'
-description: 调侃、幽灵、生物吐槽、肝度排行榜、血月、好友、猜数字
+description: 调侃、幽灵、生物吐槽、肝度排行榜、血月、好友、猜数字、猪神
 author: YourName
 
 commands:
@@ -18,3 +18,14 @@ commands:
     description: 好友系统
     usage: /friend [add|remove|list|tp] [玩家]
     aliases: [f, fr]
+  techno:
+    description: 猪神 Technoblade 管理
+    usage: /techno [spawn|remove|status]
+    aliases: [tb, pig]
+    permission: tauntplugin.techno
+    permission-message: 你没有权限使用此命令。
+
+permissions:
+  tauntplugin.techno:
+    description: 允许管理猪神 Technoblade
+    default: op

@@ -5,6 +5,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 public class TauntPlugin extends JavaPlugin {
 
+    // ==================== Manager 字段 ====================
     private TauntManager tauntManager;
     private GhostManager ghostManager;
     private MobTauntManager mobTauntManager;
@@ -19,10 +20,11 @@ public class TauntPlugin extends JavaPlugin {
     private ShadowCloneManager shadowCloneManager;
     private FriendManager friendManager;
     private GuessNumberManager guessNumberManager;
+    private TechnobladeManager technobladeManager;
 
     @Override
     public void onEnable() {
-        // ========== 先创建基础 Manager ==========
+        // ========== 基础 Manager ==========
         tauntManager = new TauntManager(this);
         ghostManager = new GhostManager(this);
         mobTauntManager = new MobTauntManager(this);
@@ -37,13 +39,15 @@ public class TauntPlugin extends JavaPlugin {
         // ★ friendManager 必须在 TauntListener 之前创建
         friendManager = new FriendManager(this);
 
-        // 依赖 friendManager 的 Manager
+        // ========== 依赖 friendManager 的 Manager ==========
         weirdVillagerManager = new WeirdVillagerManager(this);
         shadowCloneManager = new ShadowCloneManager(this);
         guessNumberManager = new GuessNumberManager(this, grindManager);
 
+        // ★ 猪神 Technoblade
+        technobladeManager = new TechnobladeManager(this);
+
         // ========== 注册事件监听器 ==========
-        // ★ TauntListener 现在需要 5 个参数
         getServer().getPluginManager().registerEvents(
                 new TauntListener(this, tauntManager, ghostManager, grindManager, friendManager),
                 this);
@@ -52,8 +56,11 @@ public class TauntPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(ghostModeManager, this);
         getServer().getPluginManager().registerEvents(playerStatusEffectManager, this);
         getServer().getPluginManager().registerEvents(guessNumberManager, this);
+        // ★ 注册猪神监听器
+        getServer().getPluginManager().registerEvents(technobladeManager, this);
 
         // ========== 注册命令 ==========
+        // /grind
         PluginCommand grindCmd = getCommand("grind");
         if (grindCmd != null) {
             GrindCommand executor = new GrindCommand(grindManager);
@@ -61,6 +68,7 @@ public class TauntPlugin extends JavaPlugin {
             grindCmd.setTabCompleter(executor);
         }
 
+        // /taunt
         PluginCommand tauntCmd = getCommand("taunt");
         if (tauntCmd != null) {
             TauntCommand executor = new TauntCommand(playerTauntManager);
@@ -68,6 +76,7 @@ public class TauntPlugin extends JavaPlugin {
             tauntCmd.setTabCompleter(executor);
         }
 
+        // /friend
         PluginCommand friendCmd = getCommand("friend");
         if (friendCmd != null) {
             FriendCommand executor = new FriendCommand(friendManager);
@@ -75,7 +84,15 @@ public class TauntPlugin extends JavaPlugin {
             friendCmd.setTabCompleter(executor);
         }
 
-        getLogger().info("TauntPlugin 已启用：调侃、幽灵、生物、肝度、血月、Herobrine、幽灵模式、状态效果、嘲讽、好友、猜数字同时上线。");
+        // ★ /techno
+        PluginCommand technoCmd = getCommand("techno");
+        if (technoCmd != null) {
+            TechnoCommand executor = new TechnoCommand(technobladeManager);
+            technoCmd.setExecutor(executor);
+            technoCmd.setTabCompleter(executor);
+        }
+
+        getLogger().info("TauntPlugin 已启用：调侃、幽灵、生物、肝度、血月、Herobrine、幽灵模式、状态效果、嘲讽、好友、猜数字、猪神同时上线。");
     }
 
     @Override
@@ -92,9 +109,11 @@ public class TauntPlugin extends JavaPlugin {
         if (shadowCloneManager != null) shadowCloneManager.shutdown();
         if (friendManager != null) friendManager.shutdown();
         if (guessNumberManager != null) guessNumberManager.shutdown();
+        if (technobladeManager != null) technobladeManager.shutdown();
         getLogger().info("TauntPlugin 已禁用。");
     }
 
+    // ==================== Getter ====================
     public TauntManager getTauntManager() { return tauntManager; }
     public GhostManager getGhostManager() { return ghostManager; }
     public MobTauntManager getMobTauntManager() { return mobTauntManager; }
@@ -106,4 +125,5 @@ public class TauntPlugin extends JavaPlugin {
     public PlayerStatusEffectManager getPlayerStatusEffectManager() { return playerStatusEffectManager; }
     public PlayerTauntManager getPlayerTauntManager() { return playerTauntManager; }
     public FriendManager getFriendManager() { return friendManager; }
+    public TechnobladeManager getTechnobladeManager() { return technobladeManager; }
 }
