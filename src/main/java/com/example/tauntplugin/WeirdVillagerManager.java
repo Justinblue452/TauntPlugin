@@ -13,80 +13,79 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
-import java.util.Random;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
 
-/**
- * 诡异村民：
- * - 每 5 分钟检查一次
- * - 每个玩家 15 分钟冷却，20% 概率触发
- * - 在玩家远处生成一个不交易、不说话、只盯着玩家的村民
- * - 玩家靠近 8 格内或 30 秒后消失
- */
 public class WeirdVillagerManager {
 
     private final JavaPlugin plugin;
     private final Random random = new Random();
 
-    private static final long CHECK_INTERVAL_MS = 300_000L;
-    private static final long PLAYER_COOLDOWN_MS = 900_000L;
-    private static final double TRIGGER_CHANCE = 0.2;
-    private static final int SPAWN_DISTANCE = 15;
-    private static final double DISAPPEAR_DISTANCE = 8.0;
-    private static final long LIFETIME_MS = 30_000L;
+    private long checkIntervalMs;
+    private long playerCooldownMs;
+    private double triggerChance;
+    private int spawnDistance;
+    private double disappearDistance;
+    private long lifetimeMs;
 
-    private final Map<UUID, Long> lastSpawn = new ConcurrentHashMap<>();
+    // ★ 使用 CooldownManager 替代 Map<UUID, Long> lastSpawn
+    private final CooldownManager cooldowns;
+
     private final Map<UUID, Villager> active = new ConcurrentHashMap<>();
     private BukkitTask task;
 
-    public WeirdVillagerManager(JavaPlugin plugin) {
+    public WeirdVillagerManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.checkIntervalMs = config.getLong("weird-villager.check-interval-ms", 300000);
+        this.playerCooldownMs = config.getLong("weird-villager.player-cooldown-ms", 900000);
+        this.triggerChance = config.getDouble("weird-villager.trigger-chance", 0.2);
+        this.spawnDistance = config.getInt("weird-villager.spawn-distance", 15);
+        this.disappearDistance = config.getDouble("weird-villager.disappear-distance", 8.0);
+        this.lifetimeMs = config.getLong("weird-villager.lifetime-ms", 30000);
+
+        // ★ 创建冷却管理器（过期时间 30 分钟，因为冷却本身 15 分钟）
+        this.cooldowns = new CooldownManager(plugin, playerCooldownMs, 0, playerCooldownMs * 2);
+
         startTask();
     }
 
     public void shutdown() {
         if (task != null) task.cancel();
-        for (Villager v : active.values()) {
-            if (v != null && v.isValid()) v.remove();
-        }
+        for (Villager v : active.values()) if (v != null && v.isValid()) v.remove();
         active.clear();
+        if (cooldowns != null) cooldowns.shutdown();   // ★
     }
 
     private void startTask() {
         task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            long now = System.currentTimeMillis();
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getGameMode().name().equals("SPECTATOR")) continue;
                 if (active.containsKey(p.getUniqueId())) continue;
 
-                Long last = lastSpawn.get(p.getUniqueId());
-                if (last != null && now - last < PLAYER_COOLDOWN_MS) continue;
+                // ★ 使用 CooldownManager
+                long remain = cooldowns.getRemaining(p.getUniqueId(), "spawn", playerCooldownMs);
+                if (remain > 0) continue;
 
                 if (p.getLocation().getBlock().getLightLevel() < 6) continue;
-                if (random.nextDouble() > TRIGGER_CHANCE) continue;
+                if (random.nextDouble() > triggerChance) continue;
 
                 spawnFor(p);
                 return;
             }
-        }, 6000L, CHECK_INTERVAL_MS / 50);
+        }, 6000L, checkIntervalMs / 50);
     }
 
     private void spawnFor(Player player) {
         Location playerLoc = player.getLocation();
         Vector dir = playerLoc.getDirection().setY(0).normalize();
-
-        // 玩家身后 15 格
-        Location behind = playerLoc.clone().subtract(dir.multiply(SPAWN_DISTANCE));
+        Location behind = playerLoc.clone().subtract(dir.multiply(spawnDistance));
         Location spawnLoc = findSafeGround(behind);
 
         if (spawnLoc == null) {
-            // 备选：随机方向
             for (int i = 0; i < 8; i++) {
                 double angle = random.nextDouble() * Math.PI * 2;
                 Location test = playerLoc.clone().add(
-                        Math.cos(angle) * SPAWN_DISTANCE, 0, Math.sin(angle) * SPAWN_DISTANCE);
+                        Math.cos(angle) * spawnDistance, 0, Math.sin(angle) * spawnDistance);
                 spawnLoc = findSafeGround(test);
                 if (spawnLoc != null) break;
             }
@@ -107,9 +106,14 @@ public class WeirdVillagerManager {
         v.setVillagerLevel(1);
 
         active.put(player.getUniqueId(), v);
-        lastSpawn.put(player.getUniqueId(), System.currentTimeMillis());
+
+        // ★ 记录冷却
+        cooldowns.isReady(player.getUniqueId(), "spawn", playerCooldownMs);
 
         player.playSound(player.getLocation(), Sound.AMBIENT_CAVE, 1.0f, 0.4f);
+
+        // ★ 成就挂钩（用工具类）
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.WEIRD_VILLAGER);
 
         final long startTime = System.currentTimeMillis();
         final BukkitTask[] followTask = new BukkitTask[1];
@@ -127,22 +131,14 @@ public class WeirdVillagerManager {
                 return;
             }
 
-            // 看向玩家
-            Location vLoc = v.getLocation();
-            Vector toPlayer = player.getLocation().toVector().subtract(vLoc.toVector()).setY(0);
-            if (toPlayer.lengthSquared() > 0.01) {
-                toPlayer.normalize();
-                float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
-                v.setRotation(yaw, 0);
-            }
+            // ★ 使用工具类朝向
+            TauntUtils.faceTo(v, player.getLocation());
 
-            // 距离检查
             double dist = v.getWorld().equals(player.getWorld())
                     ? v.getLocation().distance(player.getLocation())
                     : Double.MAX_VALUE;
-
-            if (dist < DISAPPEAR_DISTANCE
-                    || System.currentTimeMillis() - startTime > LIFETIME_MS) {
+            if (dist < disappearDistance
+                    || System.currentTimeMillis() - startTime > lifetimeMs) {
                 v.remove();
                 active.remove(player.getUniqueId());
                 player.playSound(player.getLocation(),

@@ -1,9 +1,7 @@
 package com.example.tauntplugin;
 
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -17,15 +15,20 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FriendManager {
 
     private final JavaPlugin plugin;
+    private final MessageManager messages;   // ★ 消息管理器
     private final File dataFile;
 
-    /** UUID -> 好友 UUID 集合 */
     private final Map<UUID, Set<UUID>> friends = new ConcurrentHashMap<>();
 
-    public FriendManager(JavaPlugin plugin) {
+    public FriendManager(JavaPlugin plugin, MessageManager messages) {
         this.plugin = plugin;
+        this.messages = messages;
         this.dataFile = new File(plugin.getDataFolder(), "friends.yml");
         load();
+    }
+
+    public JavaPlugin getPlugin() {
+        return plugin;
     }
 
     public void shutdown() {
@@ -36,11 +39,11 @@ public class FriendManager {
 
     public boolean addFriend(Player player, Player target) {
         if (player.equals(target)) {
-            player.sendMessage(Component.text("不能添加自己为好友", NamedTextColor.RED));
+            messages.send(player, "friend.self-add");
             return false;
         }
         if (areFriends(player, target)) {
-            player.sendMessage(Component.text("你们已经是好友了", NamedTextColor.YELLOW));
+            messages.send(player, "friend.already-friend");
             return false;
         }
 
@@ -50,27 +53,33 @@ public class FriendManager {
                 .add(player.getUniqueId());
         save();
 
-        player.sendMessage(Component.text("✅ 已添加 ", NamedTextColor.GREEN)
-                .append(Component.text(target.getName(), NamedTextColor.AQUA))
-                .append(Component.text(" 为好友", NamedTextColor.GREEN)));
-        target.sendMessage(Component.text("💚 ", NamedTextColor.GREEN)
-                .append(Component.text(player.getName(), NamedTextColor.AQUA))
-                .append(Component.text(" 把你添加为好友了", NamedTextColor.GREEN)));
+        // ★ 用消息系统替代硬编码
+        messages.send(player, "friend.added", Map.of("{target}", target.getName()));
+        messages.send(target, "friend.added-notify", Map.of("{player}", player.getName()));
+
+        // 成就挂钩
+        TauntUtils.increment(plugin, player, "friends_added", 1);
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.FIRST_FRIEND);
+
+        int count = getFriends(player.getUniqueId()).size();
+        TauntUtils.setCounter(plugin, player, "friends_count", count);
+        if (count >= 10) {
+            TauntUtils.unlock(plugin, player, AchievementManager.Ach.SOCIAL_10);
+        }
         return true;
     }
 
     public boolean removeFriend(Player player, UUID targetUuid, String targetName) {
         Set<UUID> set = friends.get(player.getUniqueId());
         if (set == null || !set.remove(targetUuid)) {
-            player.sendMessage(Component.text("你们不是好友", NamedTextColor.YELLOW));
+            messages.send(player, "friend.not-friend");
             return false;
         }
         Set<UUID> otherSet = friends.get(targetUuid);
         if (otherSet != null) otherSet.remove(player.getUniqueId());
         save();
 
-        player.sendMessage(Component.text("✅ 已移除好友 ", NamedTextColor.GREEN)
-                .append(Component.text(targetName, NamedTextColor.AQUA)));
+        messages.send(player, "friend.removed", Map.of("{target}", targetName));
         return true;
     }
 
@@ -91,37 +100,27 @@ public class FriendManager {
         List<UUID> list = new ArrayList<>();
         for (UUID uuid : getFriends(player.getUniqueId())) {
             Player p = Bukkit.getPlayer(uuid);
-            if (p != null && p.isOnline()) {
-                list.add(uuid);
-            }
+            if (p != null && p.isOnline()) list.add(uuid);
         }
         return list;
     }
 
-    /**
-     * 玩家上线时通知其在线好友。
-     */
     public void onPlayerJoin(Player player) {
         for (UUID uuid : getFriends(player.getUniqueId())) {
             Player friend = Bukkit.getPlayer(uuid);
             if (friend != null && friend.isOnline()) {
-                friend.sendMessage(Component.text("💚 好友 ", NamedTextColor.GREEN)
-                        .append(Component.text(player.getName(), NamedTextColor.AQUA))
-                        .append(Component.text(" 上线了", NamedTextColor.GREEN)));
+                messages.send(friend, "friend.friend-online",
+                        Map.of("{player}", player.getName()));
             }
         }
     }
 
-    /**
-     * 玩家下线时通知其在线好友。
-     */
     public void onPlayerQuit(Player player) {
         for (UUID uuid : getFriends(player.getUniqueId())) {
             Player friend = Bukkit.getPlayer(uuid);
             if (friend != null && friend.isOnline()) {
-                friend.sendMessage(Component.text("💔 好友 ", NamedTextColor.GRAY)
-                        .append(Component.text(player.getName(), NamedTextColor.AQUA))
-                        .append(Component.text(" 下线了", NamedTextColor.GRAY)));
+                messages.send(friend, "friend.friend-offline",
+                        Map.of("{player}", player.getName()));
             }
         }
     }
@@ -137,9 +136,7 @@ public class FriendManager {
                 List<String> list = cfg.getStringList(uuidStr);
                 Set<UUID> set = ConcurrentHashMap.newKeySet();
                 for (String s : list) {
-                    try {
-                        set.add(UUID.fromString(s));
-                    } catch (IllegalArgumentException ignored) {}
+                    try { set.add(UUID.fromString(s)); } catch (IllegalArgumentException ignored) {}
                 }
                 if (!set.isEmpty()) friends.put(uuid, set);
             } catch (IllegalArgumentException ignored) {}

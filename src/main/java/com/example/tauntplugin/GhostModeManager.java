@@ -10,11 +10,13 @@ import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
@@ -29,17 +31,21 @@ import java.util.concurrent.ConcurrentHashMap;
 public class GhostModeManager implements Listener {
 
     private final JavaPlugin plugin;
+    private final ConfigManager config;
     private final Map<UUID, GhostSession> sessions = new ConcurrentHashMap<>();
 
-    private static final long GHOST_DURATION_MS = 30_000L;
-    private static final double SPHERE_RADIUS = 2.0;
-    private static final double ROTATION_SPEED = 0.03;
+    private long ghostDurationMs;
+    private double sphereRadius;
+    private double rotationSpeed;
 
-    public GhostModeManager(JavaPlugin plugin) {
+    public GhostModeManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
-    }
+        this.config = config;
 
-    // ==================== 致死伤害拦截 ====================
+        this.ghostDurationMs = config.getLong("ghost-mode.duration-ms", 30000);
+        this.sphereRadius = config.getDouble("ghost-mode.sphere-radius", 2.0);
+        this.rotationSpeed = config.getDouble("ghost-mode.rotation-speed", 0.03);
+    }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onFatalDamage(EntityDamageEvent event) {
@@ -48,14 +54,21 @@ public class GhostModeManager implements Listener {
         if (event.getFinalDamage() < player.getHealth()) return;
         if (hasTotemOfUndying(player)) return;
 
+        // 正在被处决的玩家不进入幽灵模式
+        if (ExecutionManager.isBeingExecuted(player.getUniqueId())) return;
+
+        // 被玩家击杀时不进入幽灵模式
+        if (event instanceof EntityDamageByEntityEvent byEntity) {
+            Entity damager = byEntity.getDamager();
+            if (damager instanceof Player) return;
+        }
+
         event.setCancelled(true);
         enterGhostMode(player);
     }
 
     private boolean hasTotemOfUndying(Player player) {
-        if (player.getInventory().getItemInMainHand().getType() == Material.TOTEM_OF_UNDYING) {
-            return true;
-        }
+        if (player.getInventory().getItemInMainHand().getType() == Material.TOTEM_OF_UNDYING) return true;
         return player.getInventory().getItemInOffHand().getType() == Material.TOTEM_OF_UNDYING;
     }
 
@@ -65,14 +78,11 @@ public class GhostModeManager implements Listener {
         if (session != null) endGhostMode(session);
     }
 
-    // ==================== 进入幽灵模式 ====================
-
     private void enterGhostMode(Player player) {
         UUID uuid = player.getUniqueId();
         GameMode originalMode = player.getGameMode();
         Location deathLoc = player.getLocation().clone();
 
-        // 收集物品
         List<ItemStack> items = new ArrayList<>();
         for (ItemStack stack : player.getInventory().getContents()) {
             if (stack != null && !stack.getType().isAir()) items.add(stack.clone());
@@ -83,36 +93,30 @@ public class GhostModeManager implements Listener {
         ItemStack offhand = player.getInventory().getItemInOffHand();
         if (offhand != null && !offhand.getType().isAir()) items.add(offhand.clone());
 
-        // 清空背包
         player.getInventory().clear();
         player.getInventory().setArmorContents(null);
         player.getInventory().setItemInOffHand(null);
 
-        // ★ 修复：用 getActivePotionEffects() 遍历，兼容所有 Paper 版本
         for (PotionEffect effect : player.getActivePotionEffects()) {
             player.removePotionEffect(effect.getType());
         }
 
-        // 恢复状态
         player.setHealth(player.getMaxHealth());
         player.setFoodLevel(20);
         player.setSaturation(20f);
         player.setFireTicks(0);
         player.setFallDistance(0);
 
-        // 旁观者模式
         player.setGameMode(GameMode.SPECTATOR);
 
-        // 球体
         List<ItemDisplay> displays = createSphere(player, items);
 
         GhostSession session = new GhostSession(
                 uuid, originalMode, deathLoc, items, displays,
-                System.currentTimeMillis() + GHOST_DURATION_MS
+                System.currentTimeMillis() + ghostDurationMs
         );
         sessions.put(uuid, session);
 
-        // 标题
         Title title = Title.title(
                 Component.text("幽灵模式", NamedTextColor.DARK_PURPLE),
                 Component.text("30 秒后重生", NamedTextColor.GRAY),
@@ -123,7 +127,6 @@ public class GhostModeManager implements Listener {
         );
         player.showTitle(title);
 
-        // 音效
         player.playSound(net.kyori.adventure.sound.Sound.sound(
                 org.bukkit.Sound.ENTITY_ENDERMAN_TELEPORT,
                 net.kyori.adventure.sound.Sound.Source.PLAYER,
@@ -131,10 +134,13 @@ public class GhostModeManager implements Listener {
 
         startFollowTask(session);
 
+        // ★ 成就挂钩：灵魂出窍
+        if (plugin instanceof TauntPlugin tp && tp.getAchievementManager() != null) {
+            tp.getAchievementManager().unlock(player, AchievementManager.Ach.ENTER_GHOST);
+        }
+
         plugin.getLogger().info("[幽灵模式] " + player.getName() + " 进入幽灵模式");
     }
-
-    // ==================== 球体 ====================
 
     private List<ItemDisplay> createSphere(Player player, List<ItemStack> items) {
         List<ItemDisplay> displays = new ArrayList<>();
@@ -165,13 +171,11 @@ public class GhostModeManager implements Listener {
     private double[] spherePoint(int i, int n, double golden, double angleOffset) {
         double phi = Math.acos(1 - 2 * (i + 0.5) / n);
         double theta = golden * i + angleOffset;
-        double x = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
-        double y = SPHERE_RADIUS * Math.cos(phi);
-        double z = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
+        double x = sphereRadius * Math.sin(phi) * Math.cos(theta);
+        double y = sphereRadius * Math.cos(phi);
+        double z = sphereRadius * Math.sin(phi) * Math.sin(theta);
         return new double[]{x, y, z};
     }
-
-    // ==================== 跟随 + 倒计时 ====================
 
     private void startFollowTask(GhostSession session) {
         final double[] angle = {0};
@@ -187,7 +191,7 @@ public class GhostModeManager implements Listener {
             int remainSec = (int) Math.ceil(remain / 1000.0);
             updateCountdown(p, session, remainSec);
 
-            angle[0] += ROTATION_SPEED;
+            angle[0] += rotationSpeed;
             Location base = p.getLocation();
             int n = session.displays.size();
             if (n == 0) return;
@@ -235,8 +239,6 @@ public class GhostModeManager implements Listener {
         }
     }
 
-    // ==================== 结束幽灵模式 ====================
-
     private void endGhostMode(GhostSession session) {
         if (session.task != null) {
             session.task.cancel();
@@ -267,16 +269,13 @@ public class GhostModeManager implements Listener {
         }
 
         player.sendActionBar(Component.empty());
-
         player.setGameMode(session.originalMode);
 
         Location respawn = null;
         try {
             respawn = player.getRespawnLocation();
         } catch (Throwable ignored) {}
-        if (respawn == null) {
-            respawn = player.getWorld().getSpawnLocation();
-        }
+        if (respawn == null) respawn = player.getWorld().getSpawnLocation();
 
         player.teleport(respawn);
 

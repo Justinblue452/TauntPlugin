@@ -2,7 +2,9 @@ package com.example.tauntplugin;
 
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -25,97 +27,152 @@ public class TauntListener implements Listener {
     private final GhostManager ghostManager;
     private final GrindManager grindManager;
     private final FriendManager friendManager;
+    private final WandManager wandManager;
 
     public TauntListener(JavaPlugin plugin, TauntManager tauntManager,
                          GhostManager ghostManager, GrindManager grindManager,
-                         FriendManager friendManager) {
+                         FriendManager friendManager, WandManager wandManager) {
         this.plugin = plugin;
         this.tauntManager = tauntManager;
         this.ghostManager = ghostManager;
         this.grindManager = grindManager;
         this.friendManager = friendManager;
+        this.wandManager = wandManager;
     }
 
-    // ---------- 聊天 ----------
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    // ══════════════════════════════════════════════
+    //  聊天
+    // ══════════════════════════════════════════════
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onChat(AsyncChatEvent event) {
         Player player = event.getPlayer();
         String plain = PlainTextComponentSerializer.plainText().serialize(event.message());
-        if (!plain.startsWith("/")) {
-            tauntManager.taunt(player, "chat", (Component) null);
+
+        // 命令不会走这个事件，但保险起见保留判断
+        if (plain.startsWith("/")) return;
+
+        // ① 无声无息：禁止普通聊天
+        if (wandManager != null && wandManager.isSilenced(player.getUniqueId())) {
+            event.setCancelled(true);
+            // ★ AsyncChatEvent 是异步的，sendActionBar 必须回主线程
+            Bukkit.getScheduler().runTask(plugin, () ->
+                    player.sendActionBar(Component.text("🔇 你被无声无息封住了声音",
+                            NamedTextColor.DARK_GRAY)));
+            return;
         }
+
+        // ② 锁舌封喉：禁止所有聊天
+        if (wandManager != null && wandManager.isMuted(player.getUniqueId())) {
+            event.setCancelled(true);
+            Bukkit.getScheduler().runTask(plugin, () ->
+                    player.sendActionBar(Component.text("👅 你的舌头被黏住了，无法说话",
+                            NamedTextColor.DARK_PURPLE)));
+            return;
+        }
+
+        tauntManager.taunt(player, "chat", (Component) null);
     }
 
-    // ---------- 移动 ----------
+    // ══════════════════════════════════════════════
+    //  命令（锁舌封喉期间禁止执行命令）
+    //  不需要此限制可整段删除
+    // ══════════════════════════════════════════════
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
+    public void onCommand(PlayerCommandPreprocessEvent event) {
+        if (wandManager == null) return;
+
+        Player player = event.getPlayer();
+        if (!wandManager.isMuted(player.getUniqueId())) return;
+
+        event.setCancelled(true);
+        player.sendActionBar(Component.text("👅 你的舌头被黏住了，无法说话",
+                NamedTextColor.DARK_PURPLE));
+    }
+
+    // ══════════════════════════════════════════════
+    //  移动
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
         if (!event.hasChangedBlock()) return;
         tauntManager.taunt(event.getPlayer(), "move", (Component) null);
     }
 
-    // ---------- 破坏方块 ----------
+    // ══════════════════════════════════════════════
+    //  方块
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockBreak(BlockBreakEvent event) {
         Player player = event.getPlayer();
-        grindManager.addPoint(player);
+        if (grindManager != null) grindManager.addPoint(player);
         Component blockName = TauntManager.blockName(event.getBlock());
         tauntManager.taunt(player, "break", blockName);
     }
 
-    // ---------- 放置方块 ----------
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
         Player player = event.getPlayer();
-        grindManager.addPoint(player);
+        if (grindManager != null) grindManager.addPoint(player);
         Component blockName = TauntManager.blockName(event.getBlock());
         tauntManager.taunt(player, "place", blockName);
     }
 
-    // ---------- 死亡 ----------
+    // ══════════════════════════════════════════════
+    //  死亡
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         String cause = event.getDamageSource().getDamageType().getKey().getKey();
         Component causeComp = Component.translatable("death.attack." + cause);
 
-        if (TauntManager.isOwner(player)) {
+        if (tauntManager.isOwner(player)) {
             tauntManager.ownerDeath(player, causeComp);
             return;
         }
         tauntManager.taunt(player, "death", causeComp);
     }
 
-    // ---------- 加入 ----------
+    // ══════════════════════════════════════════════
+    //  加入 / 离开
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
 
-        if (TauntManager.isOwner(player)) {
+        if (tauntManager.isOwner(player)) {
             tauntManager.welcomeOwner(player);
         } else {
             tauntManager.taunt(player, "join", (Component) null);
         }
 
-        ghostManager.onPlayerJoin(player);
+        if (ghostManager != null) ghostManager.onPlayerJoin(player);
 
-        plugin.getServer().getScheduler().runTaskLater(plugin,
-                () -> grindManager.updatePlayer(player), 5L);
+        if (grindManager != null) {
+            plugin.getServer().getScheduler().runTaskLater(plugin,
+                    () -> grindManager.updatePlayer(player), 5L);
+        }
 
-        // ★ 好友上线通知
-        friendManager.onPlayerJoin(player);
+        if (friendManager != null) friendManager.onPlayerJoin(player);
     }
 
-    // ---------- 离开 ----------
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         tauntManager.taunt(event.getPlayer(), "quit", (Component) null);
-        grindManager.onPlayerQuit(event.getPlayer());
-
-        // ★ 好友下线通知
-        friendManager.onPlayerQuit(event.getPlayer());
+        if (grindManager != null) grindManager.onPlayerQuit(event.getPlayer());
+        if (friendManager != null) friendManager.onPlayerQuit(event.getPlayer());
     }
 
-    // ---------- 攻击 ----------
+    // ══════════════════════════════════════════════
+    //  战斗
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
         if (!(event.getDamager() instanceof Player player)) return;
@@ -125,7 +182,6 @@ public class TauntListener implements Listener {
         tauntManager.taunt(player, "attack", name);
     }
 
-    // ---------- 摔落 ----------
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFallDamage(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
@@ -134,7 +190,10 @@ public class TauntListener implements Listener {
         }
     }
 
-    // ---------- 吃东西 ----------
+    // ══════════════════════════════════════════════
+    //  生活行为
+    // ══════════════════════════════════════════════
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFoodLevelChange(FoodLevelChangeEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
@@ -143,7 +202,6 @@ public class TauntListener implements Listener {
         }
     }
 
-    // ---------- 交互 ----------
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
         Component context = event.getClickedBlock() != null
@@ -152,7 +210,6 @@ public class TauntListener implements Listener {
         tauntManager.taunt(event.getPlayer(), "interact", context);
     }
 
-    // ---------- 钓鱼 ----------
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFish(PlayerFishEvent event) {
         if (event.getState() == PlayerFishEvent.State.CAUGHT_FISH) {
@@ -160,7 +217,6 @@ public class TauntListener implements Listener {
         }
     }
 
-    // ---------- 潜行 ----------
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onToggleSneak(PlayerToggleSneakEvent event) {
         if (event.isSneaking()) {
@@ -168,7 +224,6 @@ public class TauntListener implements Listener {
         }
     }
 
-    // ---------- 升级 ----------
     @EventHandler(priority = EventPriority.MONITOR)
     public void onLevelChange(PlayerLevelChangeEvent event) {
         if (event.getNewLevel() > event.getOldLevel()) {
@@ -177,7 +232,6 @@ public class TauntListener implements Listener {
         }
     }
 
-    // ---------- 传送 ----------
     @EventHandler(priority = EventPriority.MONITOR)
     public void onTeleport(PlayerTeleportEvent event) {
         tauntManager.taunt(event.getPlayer(), "teleport", (Component) null);

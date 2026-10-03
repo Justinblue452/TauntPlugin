@@ -2,7 +2,7 @@ name: TauntPlugin
 version: 1.0.0
 main: com.example.tauntplugin.TauntPlugin
 api-version: '26.3'
-description: 调侃、幽灵、生物吐槽、肝度排行榜、血月、好友、猜数字、猪神
+description: 调侃、幽灵、生物吐槽、肝度排行榜、血月、好友、猜数字、猪神、处决、魔杖、许愿井
 author: YourName
 
 commands:
@@ -24,8 +24,35 @@ commands:
     aliases: [tb, pig]
     permission: tauntplugin.techno
     permission-message: 你没有权限使用此命令。
+  chujue:
+    description: 处决玩家或实体
+    usage: /chujue [玩家名|near|type|look] [参数...]
+    aliases: [exec, judge, punish]
+    permission: tauntplugin.chujue
+    permission-message: 你没有权限使用此命令。
+  wand:
+    description: 获取魔杖
+    usage: /wand
+    aliases: [magic]
+  ach:
+    description: 查看成就进度
+    usage: /ach [list|stats|玩家名]
+    aliases: [ achievement, achievements, 成就 ]
+  puppet:
+    description: 私人傀儡系统 - 获得效忠指定玩家的傀儡南瓜头
+    usage: /puppet <玩家名>
+    aliases: [ golem, pk ]
 
 permissions:
   tauntplugin.techno:
     description: 允许管理猪神 Technoblade
     default: op
+  tauntplugin.chujue:
+    description: 允许处决玩家
+    default: op
+  tauntplugin.reload:
+    description: 允许重载插件配置
+    default: op
+  tauntplugin.puppet:
+    description: 允许使用私人傀儡系统
+    default: true

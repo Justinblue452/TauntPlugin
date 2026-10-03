@@ -1,7 +1,6 @@
 package com.example.tauntplugin;
 
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Sound;
@@ -17,15 +16,17 @@ import java.util.stream.Collectors;
 public class FriendCommand implements CommandExecutor, TabCompleter {
 
     private final FriendManager friendManager;
+    private final MessageManager messages;   // ★ 消息管理器
 
-    public FriendCommand(FriendManager friendManager) {
+    public FriendCommand(FriendManager friendManager, MessageManager messages) {
         this.friendManager = friendManager;
+        this.messages = messages;
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage("此命令只能由玩家执行");
+            messages.send(sender, "common.player-only");
             return true;
         }
 
@@ -37,12 +38,13 @@ public class FriendCommand implements CommandExecutor, TabCompleter {
         switch (args[0].toLowerCase()) {
             case "add": {
                 if (args.length < 2) {
-                    player.sendMessage(Component.text("用法: /friend add <玩家>", NamedTextColor.RED));
+                    messages.send(player, "friend.usage-add");
                     return true;
                 }
                 Player target = Bukkit.getPlayerExact(args[1]);
                 if (target == null) {
-                    player.sendMessage(Component.text("找不到在线玩家: " + args[1], NamedTextColor.RED));
+                    messages.send(player, "common.player-not-found",
+                            Map.of("{name}", args[1]));
                     return true;
                 }
                 friendManager.addFriend(player, target);
@@ -52,7 +54,7 @@ public class FriendCommand implements CommandExecutor, TabCompleter {
             case "remove":
             case "del": {
                 if (args.length < 2) {
-                    player.sendMessage(Component.text("用法: /friend remove <玩家>", NamedTextColor.RED));
+                    messages.send(player, "friend.usage-remove");
                     return true;
                 }
                 Player target = Bukkit.getPlayerExact(args[1]);
@@ -73,10 +75,10 @@ public class FriendCommand implements CommandExecutor, TabCompleter {
             case "list": {
                 Set<UUID> list = friendManager.getFriends(player.getUniqueId());
                 if (list.isEmpty()) {
-                    player.sendMessage(Component.text("你还没有好友", NamedTextColor.GRAY));
+                    messages.send(player, "friend.empty");
                     return true;
                 }
-                player.sendMessage(Component.text("═════ 好友列表 ═════", NamedTextColor.GOLD));
+                messages.send(player, "friend.header");
                 int online = 0;
                 for (UUID uuid : list) {
                     Player p = Bukkit.getPlayer(uuid);
@@ -84,37 +86,40 @@ public class FriendCommand implements CommandExecutor, TabCompleter {
                     if (name == null) name = uuid.toString().substring(0, 8);
                     if (p != null && p.isOnline()) {
                         online++;
-                        player.sendMessage(Component.text("● ", NamedTextColor.GREEN)
-                                .append(Component.text(name, NamedTextColor.WHITE)));
+                        messages.send(player, "friend.online", Map.of("{name}", name));
                     } else {
-                        player.sendMessage(Component.text("○ ", NamedTextColor.GRAY)
-                                .append(Component.text(name, NamedTextColor.DARK_GRAY)));
+                        messages.send(player, "friend.offline", Map.of("{name}", name));
                     }
                 }
-                player.sendMessage(Component.text("在线: " + online + "/" + list.size(),
-                        NamedTextColor.AQUA));
+                messages.send(player, "friend.online-count", Map.of(
+                        "{online}", String.valueOf(online),
+                        "{total}", String.valueOf(list.size())));
                 return true;
             }
 
             case "tp": {
                 if (args.length < 2) {
-                    player.sendMessage(Component.text("用法: /friend tp <玩家>", NamedTextColor.RED));
+                    messages.send(player, "friend.usage-tp");
                     return true;
                 }
                 Player target = Bukkit.getPlayerExact(args[1]);
                 if (target == null || !target.isOnline()) {
-                    player.sendMessage(Component.text("目标不在线", NamedTextColor.RED));
+                    messages.send(player, "friend.target-offline");
                     return true;
                 }
                 if (!friendManager.areFriends(player, target)) {
-                    player.sendMessage(Component.text("只有好友才能免费传送", NamedTextColor.RED));
+                    messages.send(player, "friend.teleport-friend-only");
                     return true;
                 }
                 Location dest = target.getLocation();
                 player.teleport(dest);
                 player.playSound(dest, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
-                player.sendMessage(Component.text("✅ 已传送到 ", NamedTextColor.GREEN)
-                        .append(Component.text(target.getName(), NamedTextColor.AQUA)));
+                messages.send(player, "friend.teleport-success",
+                        Map.of("{target}", target.getName()));
+
+                // 成就挂钩
+                TauntUtils.unlock(friendManager.getPlugin(), player,
+                        AchievementManager.Ach.FRIEND_TP);
                 return true;
             }
 
@@ -125,15 +130,11 @@ public class FriendCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showHelp(Player player) {
-        player.sendMessage(Component.text("═════ /friend 帮助 ═════", NamedTextColor.GOLD));
-        player.sendMessage(Component.text("/friend add <玩家>", NamedTextColor.AQUA)
-                .append(Component.text(" - 添加好友", NamedTextColor.YELLOW)));
-        player.sendMessage(Component.text("/friend remove <玩家>", NamedTextColor.AQUA)
-                .append(Component.text(" - 删除好友", NamedTextColor.YELLOW)));
-        player.sendMessage(Component.text("/friend list", NamedTextColor.AQUA)
-                .append(Component.text(" - 好友列表", NamedTextColor.YELLOW)));
-        player.sendMessage(Component.text("/friend tp <玩家>", NamedTextColor.AQUA)
-                .append(Component.text(" - 传送到好友（免费）", NamedTextColor.YELLOW)));
+        messages.send(player, "friend.help-header");
+        messages.send(player, "friend.help-add");
+        messages.send(player, "friend.help-remove");
+        messages.send(player, "friend.help-list");
+        messages.send(player, "friend.help-tp");
     }
 
     @Override

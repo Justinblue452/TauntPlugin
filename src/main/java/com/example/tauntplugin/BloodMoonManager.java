@@ -25,11 +25,15 @@ import java.util.Random;
 public class BloodMoonManager implements Listener {
 
     private final JavaPlugin plugin;
+    private final ConfigManager config;
     private final Random random = new Random();
 
-    private static final long CHECK_INTERVAL_MS = 60_000L;
-    private static final double TRIGGER_CHANCE = 0.15;
-    private static final long DURATION_MS = 5 * 60_000L;
+    private long checkIntervalMs;
+    private double triggerChance;
+    private long durationMs;
+    private double healthMultiplier;
+    private double speedMultiplier;
+    private double attackMultiplier;
 
     private volatile boolean active = false;
     private volatile long endTime = 0L;
@@ -37,8 +41,18 @@ public class BloodMoonManager implements Listener {
     private BukkitTask checkTask;
     private BukkitTask bossBarTask;
 
-    public BloodMoonManager(JavaPlugin plugin) {
+    // ★ 构造函数：不再接收 TauntManager
+    public BloodMoonManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.config = config;
+
+        this.checkIntervalMs = config.getLong("blood-moon.check-interval-ms", 60000);
+        this.triggerChance = config.getDouble("blood-moon.trigger-chance", 0.15);
+        this.durationMs = config.getLong("blood-moon.duration-ms", 300000);
+        this.healthMultiplier = config.getDouble("blood-moon.health-multiplier", 2.0);
+        this.speedMultiplier = config.getDouble("blood-moon.speed-multiplier", 1.3);
+        this.attackMultiplier = config.getDouble("blood-moon.attack-multiplier", 1.3);
+
         startCheckTask();
     }
 
@@ -52,7 +66,9 @@ public class BloodMoonManager implements Listener {
             bossBar = null;
         }
         active = false;
-        TauntManager.bloodMoonActive = false;
+
+        // ★ 卸载时通知外界
+        Bukkit.getPluginManager().callEvent(new TauntEvents.BloodMoonEndEvent());
     }
 
     private void startCheckTask() {
@@ -61,15 +77,17 @@ public class BloodMoonManager implements Listener {
             World world = Bukkit.getWorlds().get(0);
             long time = world.getTime();
             if (time < 13000 || time > 23000) return;
-            if (random.nextDouble() > TRIGGER_CHANCE) return;
+            if (random.nextDouble() > triggerChance) return;
             trigger();
-        }, 1200L, CHECK_INTERVAL_MS / 50);
+        }, 1200L, checkIntervalMs / 50);
     }
 
     private void trigger() {
         active = true;
-        endTime = System.currentTimeMillis() + DURATION_MS;
-        TauntManager.bloodMoonActive = true;
+        endTime = System.currentTimeMillis() + durationMs;
+
+        // ★ 触发事件（替代原来直接操作 tauntManager.bloodMoonActive）
+        Bukkit.getPluginManager().callEvent(new TauntEvents.BloodMoonStartEvent(durationMs));
 
         broadcast("═══════════════════════════", NamedTextColor.DARK_RED);
         broadcast("🌑 血月降临 🌑", NamedTextColor.RED);
@@ -79,20 +97,26 @@ public class BloodMoonManager implements Listener {
         bossBar = BossBar.bossBar(
                 Component.text("🌑 血月降临 · 剩余 5:00", NamedTextColor.DARK_RED),
                 1.0f, BossBar.Color.RED, BossBar.Overlay.NOTCHED_10);
-        for (Player p : Bukkit.getOnlinePlayers()) bossBar.addViewer(p);
 
         for (Player p : Bukkit.getOnlinePlayers()) {
+            bossBar.addViewer(p);
             p.playSound(p.getLocation(), Sound.ENTITY_WITHER_SPAWN, 0.7f, 0.4f);
             p.playSound(p.getLocation(), Sound.AMBIENT_CAVE, 1.0f, 0.5f);
+
+            // 成就挂钩
+            if (plugin instanceof TauntPlugin tp && tp.getAchievementManager() != null) {
+                tp.getAchievementManager().increment(p, "blood_moons", 1);
+                tp.getAchievementManager().unlock(p, AchievementManager.Ach.BLOOD_MOON_SURVIVOR);
+            }
         }
 
-        plugin.getLogger().info("[血月] 血月已触发，持续 " + (DURATION_MS / 1000) + " 秒");
+        plugin.getLogger().info("[血月] 血月已触发，持续 " + (durationMs / 1000) + " 秒");
 
         bossBarTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (!active || bossBar == null) return;
             long remain = endTime - System.currentTimeMillis();
             if (remain <= 0) return;
-            float progress = Math.max(0f, Math.min(1f, remain / (float) DURATION_MS));
+            float progress = Math.max(0f, Math.min(1f, remain / (float) durationMs));
             int sec = (int) (remain / 1000);
             int min = sec / 60;
             int s = sec % 60;
@@ -102,13 +126,15 @@ public class BloodMoonManager implements Listener {
             bossBar.progress(progress);
         }, 20L, 20L);
 
-        Bukkit.getScheduler().runTaskLater(plugin, this::end, DURATION_MS / 50);
+        Bukkit.getScheduler().runTaskLater(plugin, this::end, durationMs / 50);
     }
 
     private void end() {
         if (!active) return;
         active = false;
-        TauntManager.bloodMoonActive = false;
+
+        // ★ 触发结束事件
+        Bukkit.getPluginManager().callEvent(new TauntEvents.BloodMoonEndEvent());
 
         if (bossBar != null) {
             for (Player p : Bukkit.getOnlinePlayers()) bossBar.removeViewer(p);
@@ -141,16 +167,16 @@ public class BloodMoonManager implements Listener {
 
         AttributeInstance maxHealthAttr = entity.getAttribute(Attribute.MAX_HEALTH);
         if (maxHealthAttr != null) {
-            double newMax = maxHealthAttr.getBaseValue() * 2.0;
+            double newMax = maxHealthAttr.getBaseValue() * healthMultiplier;
             maxHealthAttr.setBaseValue(newMax);
             entity.setHealth((float) newMax);
         }
 
         AttributeInstance speedAttr = entity.getAttribute(Attribute.MOVEMENT_SPEED);
-        if (speedAttr != null) speedAttr.setBaseValue(speedAttr.getBaseValue() * 1.3);
+        if (speedAttr != null) speedAttr.setBaseValue(speedAttr.getBaseValue() * speedMultiplier);
 
         AttributeInstance attackAttr = entity.getAttribute(Attribute.ATTACK_DAMAGE);
-        if (attackAttr != null) attackAttr.setBaseValue(attackAttr.getBaseValue() * 1.3);
+        if (attackAttr != null) attackAttr.setBaseValue(attackAttr.getBaseValue() * attackMultiplier);
 
         entity.customName(Component.text("🌑 ", NamedTextColor.DARK_RED)
                 .append(Component.translatable(
@@ -172,6 +198,12 @@ public class BloodMoonManager implements Listener {
             bossBar.addViewer(event.getPlayer());
             event.getPlayer().playSound(event.getPlayer().getLocation(),
                     Sound.AMBIENT_CAVE, 1.0f, 0.5f);
+
+            if (plugin instanceof TauntPlugin tp && tp.getAchievementManager() != null) {
+                tp.getAchievementManager().increment(event.getPlayer(), "blood_moons", 1);
+                tp.getAchievementManager().unlock(event.getPlayer(),
+                        AchievementManager.Ach.BLOOD_MOON_SURVIVOR);
+            }
         }
     }
 

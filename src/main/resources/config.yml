@@ -1,0 +1,223 @@
+# ═══════════════════════════════════════════════
+#  TauntPlugin 配置文件
+#  修改后使用 /taunt reload 或重启服务器生效
+# ═══════════════════════════════════════════════
+
+# ═══════════════ 全局 ═══════════════
+general:
+  # 服主名字（服主欢迎、讣告、道歉等功能使用）
+  owner-name: "Justin_Yan"
+
+# ═══════════════ 调侃系统 ═══════════════
+taunt:
+  enabled: true
+  global-cooldown-ms: 3000
+  actions:
+    chat:      { cooldown: 25000, chance: 0.35 }
+    move:      { cooldown: 60000, chance: 0.25 }
+    break:     { cooldown: 20000, chance: 0.4  }
+    place:     { cooldown: 20000, chance: 0.4  }
+    death:     { cooldown: 5000,  chance: 1.0  }
+    join:      { cooldown: 3000,  chance: 1.0  }
+    quit:      { cooldown: 3000,  chance: 1.0  }
+    attack:    { cooldown: 20000, chance: 0.35 }
+    interact:  { cooldown: 25000, chance: 0.25 }
+    eat:       { cooldown: 30000, chance: 0.4  }
+    fish:      { cooldown: 30000, chance: 0.5  }
+    levelup:   { cooldown: 3000,  chance: 1.0  }
+    teleport:  { cooldown: 20000, chance: 0.3  }
+    fall:      { cooldown: 15000, chance: 0.6  }
+    sneak:     { cooldown: 45000, chance: 0.25 }
+
+# ═══════════════ 服主幽灵（偷物品） ═══════════════
+ghost:
+  enabled: true
+  steal-interval-min-ms: 60000
+  steal-interval-max-ms: 180000
+  return-delay-ms: 30000
+  player-cooldown-ms: 300000
+
+# ═══════════════ 生物吐槽 ═══════════════
+mob-taunt:
+  enabled: true
+  check-interval-ms: 20000
+  player-cooldown-ms: 120000
+  trigger-chance: 0.7
+  scan-radius: 16.0
+
+# ═══════════════ 肝度排行榜 ═══════════════
+grind:
+  enabled: true
+  show-name-tag: true
+  name-tag-interval: 20
+  sort-interval: 100
+  save-interval: 6000
+  week-check-interval: 6000
+
+# ═══════════════ 血月事件 ═══════════════
+blood-moon:
+  enabled: true
+  check-interval-ms: 60000
+  trigger-chance: 0.15
+  duration-ms: 300000
+  health-multiplier: 2.0
+  speed-multiplier: 1.3
+  attack-multiplier: 1.3
+
+# ═══════════════ Herobrine ═══════════════
+herobrine:
+  enabled: true
+  skin-owner-uuid: "f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"
+  haunt:
+    enabled: true
+    check-interval-ms: 120000
+    player-cooldown-ms: 600000
+    trigger-chance: 0.3
+    lifetime-ms: 5000
+    spawn-distance: 6
+    disappear-distance: 4
+  tracker:
+    enabled: true
+    check-interval-ms: 180000
+    player-cooldown-ms: 900000
+    trigger-chance: 0.25
+    lifetime-ms: 30000
+    target-distance: 10.0
+  sign:
+    enabled: true
+    check-interval-ms: 180000
+    player-cooldown-ms: 900000
+    trigger-chance: 0.2
+    lifetime-ms: 300000
+  bedside:
+    enabled: true
+    delay-ms: 2500
+    lifetime-ms: 20000
+    trigger-chance: 0.5
+
+# ═══════════════ 幽灵模式 ═══════════════
+ghost-mode:
+  enabled: true
+  duration-ms: 30000
+  sphere-radius: 2.0
+  rotation-speed: 0.03
+
+# ═══════════════ 玩家状态效果 ═══════════════
+player-status:
+  enabled: true
+  panic:
+    threshold: 0.25
+    lock-ms: 15000
+    damage-multiplier: 0.7
+    knockback-multiplier: 3.0
+    heartbeat-interval-ms: 1000
+    hurt-animation-interval-ms: 1500
+  sweat:
+    health-threshold: 0.5
+    hot-temp-threshold: 0.9
+    sprint-duration-ms: 8000
+  breath:
+    cold-temp-threshold: 0.15
+    cycle-min-ms: 3000
+    cycle-max-ms: 4500
+  hungry:
+    food-threshold: 10
+
+# ═══════════════ 玩家嘲讽 ═══════════════
+player-taunt:
+  enabled: true
+  cooldown-ms: 5000
+  nearest-max-distance: 30.0
+  targeted-max-distance: 100.0
+  max-custom-length: 80
+  max-custom-count: 10
+
+# ═══════════════ 诡异村民 ═══════════════
+weird-villager:
+  enabled: true
+  check-interval-ms: 300000
+  player-cooldown-ms: 900000
+  trigger-chance: 0.2
+  spawn-distance: 15
+  disappear-distance: 8.0
+  lifetime-ms: 30000
+
+# ═══════════════ 玩家影分身 ═══════════════
+shadow-clone:
+  enabled: true
+  check-interval-ms: 300000
+  player-cooldown-ms: 600000
+  trigger-chance: 0.25
+  spawn-distance: 20
+  lifetime-ms: 3000
+
+# ═══════════════ 好友系统 ═══════════════
+friend:
+  enabled: true
+
+# ═══════════════ 猜数字游戏 ═══════════════
+guess-number:
+  enabled: true
+  round-interval-ms: 300000
+  round-duration-ms: 180000
+  min-number: 1
+  max-number: 100
+  reward-grind: 100
+
+# ═══════════════ 猪神 Technoblade ═══════════════
+technoblade:
+  enabled: true
+  follow-search-radius: 50.0
+  follow-teleport-distance: 25.0
+  follow-stop-distance: 4.0
+  follow-speed: 0.28
+  follow-interval-ticks: 10
+  punish-phase1-end: 20
+  punish-phase2-end: 50
+  punish-phase3-end: 110
+  punish-lift-height: 3.0
+
+# ═══════════════ 处决系统 ═══════════════
+execution:
+  enabled: true
+  player-phase1-end: 15
+  player-phase2-end: 40
+  player-phase3-end: 70
+  player-lift-height: 2.5
+  mob-exec-ticks: 30
+  mob-lift-height: 1.5
+  auto-execute-on-kill: true
+
+# ═══════════════ 魔杖系统 ═══════════════
+wand:
+  enabled: true
+  # 投射物最大飞行时间（毫秒），默认 30 秒
+  max-flight-time-ms: 30000
+  # 不可饶恕咒是否要求 OP
+  require-op-for-unforgivable: false
+  # 同一玩家同时存在的投射物上限
+  max-active-projectiles: 3
+  # 荧光闪烁的光照等级（0-15）
+  lumos-light-level: 15
+  # 荧光闪烁持续时间（毫秒）
+  lumos-duration-ms: 100000
+
+# ═══════════════ 许愿井 ═══════════════
+wish-well:
+  enabled: true
+  cooldown-ms: 3000
+# ═══════════════ 私人傀儡 ═══════════════
+puppet:
+  enabled: true
+  # 傀儡自动攻击主人周围这个半径内的敌对生物
+  protect-radius: 12.0
+  # 玩家放置南瓜后，傀儡生成位置与南瓜位置的最大距离（用于匹配）
+  detect-radius: 3.0
+  # 傀儡是否跟随主人
+  follow-owner: true
+  # 距离主人超过这个格数时传送到主人身后
+  follow-distance: 8.0
+  # 傀儡是否免疫主人伤害
+  immunity-from-owner: true
+  # AI tick 间隔（tick），默认 20 = 1 秒
+  tick-interval: 20

@@ -9,6 +9,9 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.Material;
+import org.bukkit.inventory.meta.ItemMeta;
+import java.util.Locale;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,13 +21,16 @@ public class GhostManager {
     private final JavaPlugin plugin;
     private final Random random = new Random();
 
+    private long returnDelayMs;
+    private long stealIntervalMinMs;
+    private long stealIntervalMaxMs;
+    private long playerStealCooldownMs;
+
+    // ★ 使用 CooldownManager 替代 Map<UUID, Long> lastStolen
+    private final CooldownManager cooldowns;
+
     private static final Component GHOST_PREFIX =
             Component.text("[服主的幽灵] ", NamedTextColor.DARK_PURPLE);
-
-    private static final long RETURN_DELAY_MS = 30_000L;
-    private static final long STEAL_INTERVAL_MIN_MS = 60_000L;
-    private static final long STEAL_INTERVAL_MAX_MS = 180_000L;
-    private static final long PLAYER_STEAL_COOLDOWN_MS = 300_000L;
 
     private static final List<String> STEAL_MESSAGES = List.of(
             "服主的幽灵飘过，顺手拿走了 %player% 的 %context%...",
@@ -62,7 +68,6 @@ public class GhostManager {
 
     private final Map<UUID, StolenItem> pendingReturns = new ConcurrentHashMap<>();
     private final Map<UUID, List<StolenItem>> offlinePending = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastStolen = new ConcurrentHashMap<>();
 
     private BukkitTask stealTask;
 
@@ -72,8 +77,16 @@ public class GhostManager {
         StolenItem(ItemStack item, int slot) { this.item = item; this.slot = slot; }
     }
 
-    public GhostManager(JavaPlugin plugin) {
+    public GhostManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.returnDelayMs = config.getLong("ghost.return-delay-ms", 30000);
+        this.stealIntervalMinMs = config.getLong("ghost.steal-interval-min-ms", 60000);
+        this.stealIntervalMaxMs = config.getLong("ghost.steal-interval-max-ms", 180000);
+        this.playerStealCooldownMs = config.getLong("ghost.player-cooldown-ms", 300000);
+
+        // ★ 创建冷却管理器（过期时间设为最长冷却 2 倍）
+        this.cooldowns = new CooldownManager(plugin, playerStealCooldownMs, 0, playerStealCooldownMs * 2);
+
         scheduleNextSteal();
     }
 
@@ -89,11 +102,12 @@ public class GhostManager {
             }
         }
         pendingReturns.clear();
+        if (cooldowns != null) cooldowns.shutdown();   // ★
     }
 
     private void scheduleNextSteal() {
-        long delayMs = STEAL_INTERVAL_MIN_MS
-                + (long) (random.nextDouble() * (STEAL_INTERVAL_MAX_MS - STEAL_INTERVAL_MIN_MS));
+        long delayMs = stealIntervalMinMs
+                + (long) (random.nextDouble() * (stealIntervalMaxMs - stealIntervalMinMs));
         stealTask = Bukkit.getScheduler().runTaskLater(plugin, () -> {
             try { trySteal(); } catch (Exception e) {
                 plugin.getLogger().warning("幽灵偷窃出错: " + e.getMessage());
@@ -103,13 +117,15 @@ public class GhostManager {
     }
 
     private void trySteal() {
-        long now = System.currentTimeMillis();
         List<Player> candidates = new ArrayList<>();
         for (Player p : Bukkit.getOnlinePlayers()) {
             String mode = p.getGameMode().name();
             if (mode.equals("CREATIVE") || mode.equals("SPECTATOR")) continue;
-            Long last = lastStolen.get(p.getUniqueId());
-            if (last != null && now - last < PLAYER_STEAL_COOLDOWN_MS) continue;
+
+            // ★ 使用 CooldownManager 检查冷却（不记录，后续 stealFrom 才记录）
+            long remain = cooldowns.getRemaining(p.getUniqueId(), "steal", playerStealCooldownMs);
+            if (remain > 0) continue;
+
             candidates.add(p);
         }
         if (candidates.isEmpty()) return;
@@ -124,9 +140,11 @@ public class GhostManager {
             if (s != null && !s.getType().isAir()) filled.add(i);
         }
 
+        // ★ 标记冷却（无论是否偷到都记录）
+        cooldowns.isReady(player.getUniqueId(), "steal", playerStealCooldownMs);
+
         if (filled.isEmpty()) {
             broadcast(EMPTY_MESSAGES, player, null);
-            lastStolen.put(player.getUniqueId(), System.currentTimeMillis());
             return;
         }
 
@@ -136,14 +154,17 @@ public class GhostManager {
 
         StolenItem si = new StolenItem(stolen, slot);
         pendingReturns.put(player.getUniqueId(), si);
-        lastStolen.put(player.getUniqueId(), System.currentTimeMillis());
 
         broadcast(STEAL_MESSAGES, player, itemComponent(stolen));
+
+        // ★ 成就挂钩（用工具类）
+        TauntUtils.increment(plugin, player, "ghost_steals", 1);
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.GHOST_STOLE);
 
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             pendingReturns.remove(player.getUniqueId());
             returnTo(player.getUniqueId(), si);
-        }, RETURN_DELAY_MS / 50);
+        }, returnDelayMs / 50);
     }
 
     private void returnTo(UUID playerId, StolenItem si) {
@@ -182,10 +203,62 @@ public class GhostManager {
     }
 
     private Component itemComponent(ItemStack stack) {
-        NamespacedKey key = stack.getType().getKey();
-        Component name = Component.translatable("item." + key.getNamespace() + "." + key.getKey());
-        if (stack.getAmount() > 1) name = name.append(Component.text(" x" + stack.getAmount()));
+        if (stack == null || stack.getType().isAir()) {
+            return Component.text("未知物品");
+        }
+
+        Component name;
+
+        // ① 优先用自定义名字
+        ItemMeta meta = stack.getItemMeta();
+        if (meta != null && meta.hasDisplayName()) {
+            Component custom = meta.displayName();
+            name = (custom != null) ? custom : buildDefaultItemName(stack);
+        } else {
+            name = buildDefaultItemName(stack);
+        }
+
+        // ② 数量后缀
+        if (stack.getAmount() > 1) {
+            name = name.append(Component.text(" x" + stack.getAmount()));
+        }
+
         return name;
+    }
+
+    /**
+     * 用翻译键 + fallback 构建原版物品名。
+     *
+     * <p>例如钻石剑：{@code Component.translatable("item.minecraft.diamond_sword", "Diamond Sword")}</p>
+     * <ul>
+     *   <li>中文客户端 → "钻石剑"</li>
+     *   <li>英文客户端 → "Diamond Sword"</li>
+     *   <li>找不到翻译键 → "Diamond Sword"（fallback）</li>
+     * </ul>
+     */
+    private Component buildDefaultItemName(ItemStack stack) {
+        Material material = stack.getType();
+        NamespacedKey key = material.getKey();
+        String translationKey = "item." + key.getNamespace() + "." + key.getKey();
+        String fallback = formatMaterialName(material);
+        return Component.translatable(translationKey, fallback);
+    }
+
+    /**
+     * 把 Material 枚举名格式化为"人类可读"的英文名。
+     * 例如 DIAMOND_SWORD → "Diamond Sword"，OAK_LOG → "Oak Log"。
+     */
+    private String formatMaterialName(Material material) {
+        String name = material.name().toLowerCase(Locale.ROOT).replace('_', ' ');
+        String[] parts = name.split(" ");
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            sb.append(Character.toUpperCase(part.charAt(0)))
+                    .append(part.substring(1))
+                    .append(' ');
+        }
+        return sb.toString().trim();
     }
 
     private void broadcast(List<String> pool, Player player, Component context) {

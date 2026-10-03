@@ -16,38 +16,25 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * 玩家嘲讽系统：
- * - /taunt              嘲讽最近的玩家
- * - /taunt <玩家名>      嘲讽指定玩家
- * - /taunt set <文案>    设置自定义嘲讽文案
- * - /taunt list         查看自定义文案
- * - /taunt remove <序号> 删除指定文案
- * - /taunt clear        清除所有自定义文案
- * - /taunt help         帮助
- */
 public class PlayerTauntManager {
 
     private final JavaPlugin plugin;
+    private final ConfigManager config;
     private final File dataFile;
 
-    // ==================== 参数 ====================
-    private static final long COOLDOWN_MS = 5_000L;
-    /** 嘲讽最近玩家时的检测距离 */
-    private static final double NEAREST_MAX_DISTANCE = 30.0;
-    /** 指定嘲讽玩家时的最大距离（0 = 不限制） */
-    private static final double TARGETED_MAX_DISTANCE = 100.0;
-    /** 自定义文案最大长度 */
-    private static final int MAX_CUSTOM_LENGTH = 80;
-    /** 每个玩家最多保存的自定义文案数量 */
-    private static final int MAX_CUSTOM_COUNT = 10;
+    private long cooldownMs;
+    private double nearestMaxDistance;
+    private double targetedMaxDistance;
+    private int maxCustomLength;
+    private int maxCustomCount;
 
-    /** 简单关键词过滤（小写） */
+    // ★ 使用 CooldownManager 替代 Map<UUID, Long>
+    private final CooldownManager cooldowns;
+
     private static final List<String> BANNED_KEYWORDS = List.of(
             "操你", "草泥马", "傻逼", "妈的", "fuck", "shit"
     );
 
-    // ==================== 内置消息池 ====================
     private static final List<String> DEFAULT_TAUNT_MESSAGES = List.of(
             "%player% 对 %target% 说：你的操作比我的猫还差。",
             "%player% 嘲讽 %target%：装备挺好看，可惜人不行。",
@@ -86,29 +73,35 @@ public class PlayerTauntManager {
             "%player% 对 %target% 说：你是不是把设置里的鼠标灵敏度调成 0 了？",
             "%player% 嘲讽 %target%：你的死亡次数，比你的击杀次数多吧？",
             "%player% 对 %target% 说：你的技能点，全点在挨打上了。",
-            "%player% 嘲讽 %target%：你的角色名应该改成“移动靶子”。"
+            "%player% 嘲讽 %target%：你的角色名应该改成\"移动靶子\"。"
     );
 
-    // ==================== 状态 ====================
     private final Map<UUID, List<String>> customTaunts = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastTaunt = new ConcurrentHashMap<>();
 
-    public PlayerTauntManager(JavaPlugin plugin) {
+    public PlayerTauntManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.config = config;
         this.dataFile = new File(plugin.getDataFolder(), "custom_taunts.yml");
+
+        this.cooldownMs = config.getLong("player-taunt.cooldown-ms", 5000);
+        this.nearestMaxDistance = config.getDouble("player-taunt.nearest-max-distance", 30.0);
+        this.targetedMaxDistance = config.getDouble("player-taunt.targeted-max-distance", 100.0);
+        this.maxCustomLength = config.getInt("player-taunt.max-custom-length", 80);
+        this.maxCustomCount = config.getInt("player-taunt.max-custom-count", 10);
+
+        // ★ 创建冷却管理器（不启用全局冷却，因为嘲讽本身就是独立冷却）
+        this.cooldowns = new CooldownManager(plugin, cooldownMs, 0);
+
         load();
     }
 
     public void shutdown() {
         save();
-        lastTaunt.clear();
+        if (cooldowns != null) cooldowns.shutdown();   // ★
     }
 
     // ==================== 嘲讽触发 ====================
 
-    /**
-     * 嘲讽最近的玩家。
-     */
     public boolean tauntNearest(Player player) {
         if (!checkCooldown(player)) return false;
 
@@ -119,63 +112,49 @@ public class PlayerTauntManager {
         }
 
         performTaunt(player, nearest);
-        lastTaunt.put(player.getUniqueId(), System.currentTimeMillis());
         return true;
     }
 
-    /**
-     * 嘲讽指定玩家。
-     * 支持部分名匹配：输入 "st" 匹配 "steve"。
-     */
     public boolean tauntTarget(Player player, String targetName) {
         if (!checkCooldown(player)) return false;
 
-        // 查找目标
-        Player target = findPlayerByName(targetName);
+        Player target = TauntUtils.findPlayerByName(targetName);   // ★ 使用工具类
         if (target == null) {
             player.sendMessage(Component.text("找不到玩家: " + targetName, NamedTextColor.RED));
             return false;
         }
-
-        // 不能嘲讽自己
         if (target.equals(player)) {
             player.sendMessage(Component.text("你不能嘲讽自己", NamedTextColor.RED));
             return false;
         }
-
-        // 旁观者不能作为目标
         if (target.getGameMode().name().equals("SPECTATOR")) {
             player.sendMessage(Component.text("不能嘲讽旁观模式的玩家", NamedTextColor.RED));
             return false;
         }
-
-        // 跨世界检查
         if (!target.getWorld().equals(player.getWorld())) {
             player.sendMessage(Component.text("目标不在同一世界", NamedTextColor.RED));
             return false;
         }
 
-        // 距离检查（0 = 不限制）
-        if (TARGETED_MAX_DISTANCE > 0) {
+        if (targetedMaxDistance > 0) {
             double dist = target.getLocation().distance(player.getLocation());
-            if (dist > TARGETED_MAX_DISTANCE) {
+            if (dist > targetedMaxDistance) {
                 player.sendMessage(Component.text(
-                        String.format("目标距离太远（%.1f 格，上限 %.0f 格）", dist, TARGETED_MAX_DISTANCE),
+                        String.format("目标距离太远（%.1f 格，上限 %.0f 格）", dist, targetedMaxDistance),
                         NamedTextColor.RED));
                 return false;
             }
         }
 
         performTaunt(player, target);
-        lastTaunt.put(player.getUniqueId(), System.currentTimeMillis());
         return true;
     }
 
+    // ★ 简化版冷却检查
     private boolean checkCooldown(Player player) {
-        long now = System.currentTimeMillis();
-        Long last = lastTaunt.get(player.getUniqueId());
-        if (last != null && now - last < COOLDOWN_MS) {
-            long remainSec = (COOLDOWN_MS - (now - last)) / 1000 + 1;
+        if (!cooldowns.isReady(player.getUniqueId(), "taunt")) {
+            long remainMs = cooldowns.getRemaining(player.getUniqueId(), "taunt", cooldownMs);
+            long remainSec = remainMs / 1000 + 1;
             player.sendMessage(Component.text("嘲讽冷却中，还需 " + remainSec + " 秒",
                     NamedTextColor.GRAY));
             return false;
@@ -196,11 +175,9 @@ public class PlayerTauntManager {
 
         Bukkit.getServer().broadcast(message);
 
-        // 音效
         player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.2f);
         target.playSound(target.getLocation(), Sound.ENTITY_VILLAGER_HURT, 1.0f, 0.8f);
 
-        // 粒子
         player.getWorld().spawnParticle(
                 Particle.ANGRY_VILLAGER,
                 player.getLocation().add(0, 2.3, 0),
@@ -211,6 +188,10 @@ public class PlayerTauntManager {
                 target.getLocation().add(0, 2.3, 0),
                 5, 0.3, 0.2, 0.3, 0.01
         );
+
+        // 成就挂钩（用工具类，1 行搞定）
+        TauntUtils.increment(plugin, player, "taunts_given", 1);
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.FIRST_TAUNT);
     }
 
     private String pickTemplate(Player player) {
@@ -224,7 +205,7 @@ public class PlayerTauntManager {
 
     private Player findNearestPlayer(Player player) {
         Player nearest = null;
-        double nearestDistSq = NEAREST_MAX_DISTANCE * NEAREST_MAX_DISTANCE;
+        double nearestDistSq = nearestMaxDistance * nearestMaxDistance;
 
         for (Player other : Bukkit.getOnlinePlayers()) {
             if (other.equals(player)) continue;
@@ -240,39 +221,11 @@ public class PlayerTauntManager {
         return nearest;
     }
 
-    /**
-     * 根据名字查找在线玩家。
-     * 匹配规则：
-     * 1. 优先精确匹配（忽略大小写）
-     * 2. 再尝试部分匹配（输入是名字的一部分）
-     * 3. 多个部分匹配时返回 null（避免歧义）
-     */
-    private Player findPlayerByName(String name) {
-        if (name == null || name.isEmpty()) return null;
-
-        // ① 精确匹配
-        Player exact = Bukkit.getPlayerExact(name);
-        if (exact != null && exact.isOnline()) return exact;
-
-        // ② 部分匹配
-        String lower = name.toLowerCase();
-        List<Player> matches = new ArrayList<>();
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.getName().toLowerCase().contains(lower)) {
-                matches.add(p);
-            }
-        }
-
-        if (matches.isEmpty()) return null;
-        if (matches.size() == 1) return matches.get(0);
-        return null; // 多个匹配，返回 null
-    }
-
     // ==================== 自定义文案管理 ====================
 
     public void addCustomTaunt(Player player, String content) {
-        if (content.length() > MAX_CUSTOM_LENGTH) {
-            player.sendMessage(Component.text("文案太长，最多 " + MAX_CUSTOM_LENGTH + " 个字符",
+        if (content.length() > maxCustomLength) {
+            player.sendMessage(Component.text("文案太长，最多 " + maxCustomLength + " 个字符",
                     NamedTextColor.RED));
             return;
         }
@@ -293,8 +246,8 @@ public class PlayerTauntManager {
         List<String> list = customTaunts.computeIfAbsent(
                 player.getUniqueId(), k -> new ArrayList<>());
 
-        if (list.size() >= MAX_CUSTOM_COUNT) {
-            player.sendMessage(Component.text("你最多只能保存 " + MAX_CUSTOM_COUNT + " 条自定义文案",
+        if (list.size() >= maxCustomCount) {
+            player.sendMessage(Component.text("你最多只能保存 " + maxCustomCount + " 条自定义文案",
                     NamedTextColor.RED));
             return;
         }
@@ -304,8 +257,11 @@ public class PlayerTauntManager {
 
         player.sendMessage(Component.text("✅ 已添加自定义嘲讽文案：", NamedTextColor.GREEN)
                 .append(Component.text(content, NamedTextColor.YELLOW)));
-        player.sendMessage(Component.text("当前共 " + list.size() + "/" + MAX_CUSTOM_COUNT + " 条",
+        player.sendMessage(Component.text("当前共 " + list.size() + "/" + maxCustomCount + " 条",
                 NamedTextColor.GRAY));
+
+        // 成就挂钩
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.CUSTOM_TAUNT);
     }
 
     public void clearCustomTaunts(Player player) {
@@ -332,7 +288,7 @@ public class PlayerTauntManager {
             player.sendMessage(Component.text("#" + (i + 1) + " ", NamedTextColor.AQUA)
                     .append(Component.text(list.get(i), NamedTextColor.YELLOW)));
         }
-        player.sendMessage(Component.text("共 " + list.size() + "/" + MAX_CUSTOM_COUNT + " 条",
+        player.sendMessage(Component.text("共 " + list.size() + "/" + maxCustomCount + " 条",
                 NamedTextColor.GRAY));
     }
 
@@ -342,16 +298,13 @@ public class PlayerTauntManager {
             player.sendMessage(Component.text("你还没有设置自定义嘲讽文案", NamedTextColor.GRAY));
             return;
         }
-
         if (index < 1 || index > list.size()) {
             player.sendMessage(Component.text("无效的序号，范围 1~" + list.size(), NamedTextColor.RED));
             return;
         }
 
         String removed = list.remove(index - 1);
-        if (list.isEmpty()) {
-            customTaunts.remove(player.getUniqueId());
-        }
+        if (list.isEmpty()) customTaunts.remove(player.getUniqueId());
         save();
         player.sendMessage(Component.text("✅ 已删除：", NamedTextColor.GREEN)
                 .append(Component.text(removed, NamedTextColor.YELLOW)));
@@ -372,39 +325,31 @@ public class PlayerTauntManager {
         player.sendMessage(Component.text("/taunt clear ", NamedTextColor.AQUA)
                 .append(Component.text("- 清除所有自定义文案", NamedTextColor.YELLOW)));
         player.sendMessage(Component.text("提示：自定义文案支持 %target% 占位符", NamedTextColor.GRAY));
-        player.sendMessage(Component.text("示例：/taunt set %target% 你太菜了", NamedTextColor.GRAY));
     }
 
     // ==================== 持久化 ====================
 
     private void load() {
         if (!dataFile.exists()) return;
-
-        FileConfiguration config = YamlConfiguration.loadConfiguration(dataFile);
-        for (String uuidStr : config.getKeys(false)) {
+        FileConfiguration cfg = YamlConfiguration.loadConfiguration(dataFile);
+        for (String uuidStr : cfg.getKeys(false)) {
             try {
                 UUID uuid = UUID.fromString(uuidStr);
-                List<String> list = config.getStringList(uuidStr);
-                if (!list.isEmpty()) {
-                    customTaunts.put(uuid, new ArrayList<>(list));
-                }
+                List<String> list = cfg.getStringList(uuidStr);
+                if (!list.isEmpty()) customTaunts.put(uuid, new ArrayList<>(list));
             } catch (IllegalArgumentException ignored) {}
         }
-
         plugin.getLogger().info("[嘲讽] 已加载 " + customTaunts.size() + " 位玩家的自定义文案");
     }
 
     private void save() {
         try {
-            if (!plugin.getDataFolder().exists()) {
-                plugin.getDataFolder().mkdirs();
-            }
-
-            FileConfiguration config = new YamlConfiguration();
+            if (!plugin.getDataFolder().exists()) plugin.getDataFolder().mkdirs();
+            FileConfiguration cfg = new YamlConfiguration();
             for (Map.Entry<UUID, List<String>> entry : customTaunts.entrySet()) {
-                config.set(entry.getKey().toString(), entry.getValue());
+                cfg.set(entry.getKey().toString(), entry.getValue());
             }
-            config.save(dataFile);
+            cfg.save(dataFile);
         } catch (IOException e) {
             plugin.getLogger().warning("[嘲讽] 保存失败: " + e.getMessage());
         }

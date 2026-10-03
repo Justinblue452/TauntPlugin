@@ -15,93 +15,87 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * 玩家影分身：
- * - 每 5 分钟检查一次
- * - 每个玩家 10 分钟冷却，25% 概率触发
- * - 玩家在野外时，正前方 20 格生成一个"自己"的影子
- * - 3 秒后消失
- */
 public class ShadowCloneManager {
 
     private final JavaPlugin plugin;
     private final Random random = new Random();
 
-    private static final long CHECK_INTERVAL_MS = 300_000L;
-    private static final long PLAYER_COOLDOWN_MS = 600_000L;
-    private static final double TRIGGER_CHANCE = 0.25;
-    private static final int SPAWN_DISTANCE = 20;
-    private static final long LIFETIME_MS = 3_000L;
+    private long checkIntervalMs;
+    private long playerCooldownMs;
+    private double triggerChance;
+    private int spawnDistance;
+    private long lifetimeMs;
 
-    private final Map<UUID, Long> lastSpawn = new ConcurrentHashMap<>();
+    // ★ 使用 CooldownManager 替代 Map<UUID, Long> lastSpawn
+    private final CooldownManager cooldowns;
+
     private final Map<UUID, Mannequin> active = new ConcurrentHashMap<>();
     private BukkitTask task;
 
-    public ShadowCloneManager(JavaPlugin plugin) {
+    public ShadowCloneManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.checkIntervalMs = config.getLong("shadow-clone.check-interval-ms", 300000);
+        this.playerCooldownMs = config.getLong("shadow-clone.player-cooldown-ms", 600000);
+        this.triggerChance = config.getDouble("shadow-clone.trigger-chance", 0.25);
+        this.spawnDistance = config.getInt("shadow-clone.spawn-distance", 20);
+        this.lifetimeMs = config.getLong("shadow-clone.lifetime-ms", 3000);
+
+        // ★ 创建冷却管理器
+        this.cooldowns = new CooldownManager(plugin, playerCooldownMs, 0, playerCooldownMs * 2);
+
         startTask();
     }
 
     public void shutdown() {
         if (task != null) task.cancel();
-        for (Mannequin m : active.values()) {
-            if (m != null && m.isValid()) m.remove();
-        }
+        for (Mannequin m : active.values()) if (m != null && m.isValid()) m.remove();
         active.clear();
+        if (cooldowns != null) cooldowns.shutdown();   // ★
     }
 
     private void startTask() {
         task = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            long now = System.currentTimeMillis();
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getGameMode().name().equals("SPECTATOR")) continue;
                 if (active.containsKey(p.getUniqueId())) continue;
 
-                Long last = lastSpawn.get(p.getUniqueId());
-                if (last != null && now - last < PLAYER_COOLDOWN_MS) continue;
+                // ★ 使用 CooldownManager
+                long remain = cooldowns.getRemaining(p.getUniqueId(), "spawn", playerCooldownMs);
+                if (remain > 0) continue;
 
-                // 必须在野外（头顶露天）
                 if (p.getLocation().add(0, 5, 0).getBlock().getType().isSolid()) continue;
-
-                if (random.nextDouble() > TRIGGER_CHANCE) continue;
+                if (random.nextDouble() > triggerChance) continue;
 
                 spawnShadow(p);
                 return;
             }
-        }, 6000L, CHECK_INTERVAL_MS / 50);
+        }, 6000L, checkIntervalMs / 50);
     }
 
     private void spawnShadow(Player player) {
         Location playerLoc = player.getLocation();
-        // 玩家正前方 20 格
         Vector dir = playerLoc.getDirection().setY(0).normalize();
-        Location target = playerLoc.clone().add(dir.multiply(SPAWN_DISTANCE));
-
+        Location target = playerLoc.clone().add(dir.multiply(spawnDistance));
         Location spawnLoc = findSafeGround(target);
         if (spawnLoc == null) return;
 
-        // 影子面向玩家
         Vector toPlayer = playerLoc.toVector().subtract(spawnLoc.toVector()).setY(0).normalize();
         float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
         spawnLoc.setYaw(yaw);
         spawnLoc.setPitch(0);
 
         Mannequin m = player.getWorld().spawn(spawnLoc, Mannequin.class, mq -> {
-            // ★ 修正：将 PlayerProfile 转换为 ResolvableProfile
             try {
                 mq.setProfile(io.papermc.paper.datacomponent.item.ResolvableProfile
                         .resolvableProfile(player.getPlayerProfile()));
             } catch (Throwable ignored) {
-                // 回退：如果上述 API 不可用，尝试仅用 UUID 和名字
                 try {
                     mq.setProfile(io.papermc.paper.datacomponent.item.ResolvableProfile
                             .resolvableProfile()
                             .uuid(player.getUniqueId())
                             .name(player.getName())
                             .build());
-                } catch (Throwable ignored2) {
-                    // 最终回退：使用默认皮肤
-                }
+                } catch (Throwable ignored2) {}
             }
             mq.setDescription(null);
             mq.setImmovable(true);
@@ -113,11 +107,15 @@ public class ShadowCloneManager {
         });
 
         active.put(player.getUniqueId(), m);
-        lastSpawn.put(player.getUniqueId(), System.currentTimeMillis());
 
-        // 微弱音效提示
+        // ★ 记录冷却
+        cooldowns.isReady(player.getUniqueId(), "spawn", playerCooldownMs);
+
         player.playSound(player.getLocation(),
                 Sound.BLOCK_AMETHYST_BLOCK_CHIME, 0.5f, 0.5f);
+
+        // ★ 成就挂钩（用工具类）
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.SAW_CLONE);
 
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (m.isValid()) m.remove();
@@ -126,7 +124,7 @@ public class ShadowCloneManager {
                 player.playSound(player.getLocation(),
                         Sound.ENTITY_ENDERMAN_TELEPORT, 0.5f, 1.5f);
             }
-        }, LIFETIME_MS / 50);
+        }, lifetimeMs / 50);
     }
 
     private Location findSafeGround(Location origin) {

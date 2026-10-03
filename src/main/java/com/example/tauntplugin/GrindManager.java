@@ -22,7 +22,15 @@ import java.util.stream.Collectors;
 public class GrindManager {
 
     private final JavaPlugin plugin;
+    private final ConfigManager config;
     private final File dataFile;
+
+    // ★ 从配置读取
+    private boolean showNameTag;
+    private int nameTagInterval;
+    private int sortInterval;
+    private int saveInterval;
+    private int weekCheckInterval;
 
     private final Map<UUID, Integer> grindPoints = new ConcurrentHashMap<>();
     private final Map<UUID, Integer> weeklyPoints = new ConcurrentHashMap<>();
@@ -31,7 +39,6 @@ public class GrindManager {
 
     private volatile UUID weekKing = null;
     private volatile long weekStartTime = 0;
-
     private volatile boolean dirty = false;
 
     private BukkitTask nameTagTask;
@@ -39,16 +46,25 @@ public class GrindManager {
     private BukkitTask saveTask;
     private BukkitTask weekCheckTask;
 
-    private static final String TEAM_NAME = "tp_grind_display";
+    private static final String TEAM_PREFIX = "g_";
 
-    public GrindManager(JavaPlugin plugin) {
+    public GrindManager(JavaPlugin plugin, ConfigManager config) {
         this.plugin = plugin;
+        this.config = config;
         this.dataFile = new File(plugin.getDataFolder(), "grind.yml");
+
+        this.showNameTag = config.getBoolean("grind.show-name-tag", true);
+        this.nameTagInterval = config.getInt("grind.name-tag-interval", 20);
+        this.sortInterval = config.getInt("grind.sort-interval", 100);
+        this.saveInterval = config.getInt("grind.save-interval", 6000);
+        this.weekCheckInterval = config.getInt("grind.week-check-interval", 6000);
 
         load();
         checkWeeklyReset();
         startTasks();
     }
+
+    // ==================== 肝度操作 ====================
 
     public void addPoint(Player player) {
         UUID uuid = player.getUniqueId();
@@ -58,7 +74,6 @@ public class GrindManager {
         dirty = true;
     }
 
-    /** ★ 直接给玩家加肝度（用于猜数字等奖励） */
     public void addPointsDirect(Player player, int amount) {
         if (player == null || amount <= 0) return;
         UUID uuid = player.getUniqueId();
@@ -68,11 +83,25 @@ public class GrindManager {
         dirty = true;
     }
 
-    public int getPoints(UUID uuid) { return grindPoints.getOrDefault(uuid, 0); }
-    public int getWeeklyPoints(UUID uuid) { return weeklyPoints.getOrDefault(uuid, 0); }
-    public int getRank(UUID uuid) { return rankings.getOrDefault(uuid, -1); }
-    public UUID getWeekKing() { return weekKing; }
-    public boolean isWeekKing(UUID uuid) { return weekKing != null && weekKing.equals(uuid); }
+    public int getPoints(UUID uuid) {
+        return grindPoints.getOrDefault(uuid, 0);
+    }
+
+    public int getWeeklyPoints(UUID uuid) {
+        return weeklyPoints.getOrDefault(uuid, 0);
+    }
+
+    public int getRank(UUID uuid) {
+        return rankings.getOrDefault(uuid, -1);
+    }
+
+    public UUID getWeekKing() {
+        return weekKing;
+    }
+
+    public boolean isWeekKing(UUID uuid) {
+        return weekKing != null && weekKing.equals(uuid);
+    }
 
     public String getPlayerName(UUID uuid) {
         String cached = playerNames.get(uuid);
@@ -85,24 +114,31 @@ public class GrindManager {
     public List<Map.Entry<UUID, Integer>> getTopPlayers(int limit) {
         return grindPoints.entrySet().stream()
                 .sorted(Map.Entry.<UUID, Integer>comparingByValue().reversed())
-                .limit(limit).collect(Collectors.toList());
+                .limit(limit)
+                .collect(Collectors.toList());
     }
 
     public List<Map.Entry<UUID, Integer>> getWeeklyTopPlayers(int limit) {
         return weeklyPoints.entrySet().stream()
                 .sorted(Map.Entry.<UUID, Integer>comparingByValue().reversed())
-                .limit(limit).collect(Collectors.toList());
+                .limit(limit)
+                .collect(Collectors.toList());
     }
+
+    // ==================== 排名更新 ====================
 
     private void updateRankings() {
         List<Map.Entry<UUID, Integer>> sorted = grindPoints.entrySet().stream()
                 .sorted(Map.Entry.<UUID, Integer>comparingByValue().reversed())
                 .collect(Collectors.toList());
+
         rankings.clear();
         for (int i = 0; i < sorted.size(); i++) {
             rankings.put(sorted.get(i).getKey(), i + 1);
         }
     }
+
+    // ==================== 周结算 ====================
 
     private long getCurrentMondayStart() {
         Calendar cal = Calendar.getInstance();
@@ -117,7 +153,10 @@ public class GrindManager {
 
     private void checkWeeklyReset() {
         long thisMonday = getCurrentMondayStart();
-        if (weekStartTime == 0) { weekStartTime = thisMonday; return; }
+        if (weekStartTime == 0) {
+            weekStartTime = thisMonday;
+            return;
+        }
         if (thisMonday > weekStartTime) {
             settleWeek();
             weeklyPoints.clear();
@@ -166,33 +205,59 @@ public class GrindManager {
         plugin.getLogger().info("[肝度] 本周肝帝: " + finalName + " (" + finalPoints + " 肝度)");
     }
 
-    private void updateAllNameTags() {
-        Collection<? extends Player> online = Bukkit.getOnlinePlayers();
-        if (online.isEmpty()) return;
-        Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
-        Team team = sb.getTeam(TEAM_NAME);
-        if (team == null) {
-            try { team = sb.registerNewTeam(TEAM_NAME); }
-            catch (IllegalArgumentException e) { team = sb.getTeam(TEAM_NAME); }
-        }
-        if (team == null) return;
-        for (Player p : online) updateNameTag(p, team);
+    // ==================== 名牌（每个玩家独立 team）====================
+
+    private String getTeamName(Player player) {
+        String uuidStr = player.getUniqueId().toString().replace("-", "");
+        return TEAM_PREFIX + uuidStr.substring(0, 12);
     }
 
-    private void updateNameTag(Player player, Team team) {
+    private Team getOrCreateTeam(Player player) {
+        Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
+        String teamName = getTeamName(player);
+
+        Team team = sb.getTeam(teamName);
+        if (team == null) {
+            try {
+                team = sb.registerNewTeam(teamName);
+            } catch (IllegalArgumentException e) {
+                team = sb.getTeam(teamName);
+            }
+        }
+        return team;
+    }
+
+    private void updateNameTag(Player player) {
+        Team team = getOrCreateTeam(player);
+        if (team == null) return;
+
         String entry = player.getName();
-        if (!team.hasEntry(entry)) team.addEntry(entry);
+        if (!team.hasEntry(entry)) {
+            removeFromAllTeams(player.getName());
+            team.addEntry(entry);
+        }
+
         team.prefix(buildPrefix(player));
     }
 
-    public void updatePlayer(Player player) {
+    private void removeFromAllTeams(String playerName) {
         Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
-        Team team = sb.getTeam(TEAM_NAME);
-        if (team == null) {
-            try { team = sb.registerNewTeam(TEAM_NAME); }
-            catch (IllegalArgumentException e) { team = sb.getTeam(TEAM_NAME); }
+        for (Team t : sb.getTeams()) {
+            if (t.hasEntry(playerName)) {
+                t.removeEntry(playerName);
+            }
         }
-        if (team != null) updateNameTag(player, team);
+    }
+
+    private void updateAllNameTags() {
+        if (!showNameTag) return;
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            updateNameTag(p);
+        }
+    }
+
+    public void updatePlayer(Player player) {
+        updateNameTag(player);
     }
 
     private Component buildPrefix(Player player) {
@@ -227,22 +292,30 @@ public class GrindManager {
 
     public void onPlayerQuit(Player player) {
         Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
-        Team team = sb.getTeam(TEAM_NAME);
-        if (team != null && team.hasEntry(player.getName())) {
-            team.removeEntry(player.getName());
+        String teamName = getTeamName(player);
+        Team team = sb.getTeam(teamName);
+        if (team != null) {
+            if (team.hasEntry(player.getName())) {
+                team.removeEntry(player.getName());
+            }
+            team.unregister();
         }
     }
 
+    // ==================== 任务调度 ====================
+
     private void startTasks() {
-        nameTagTask = Bukkit.getScheduler().runTaskTimer(
-                plugin, this::updateAllNameTags, 20L, 20L);
+        if (showNameTag) {
+            nameTagTask = Bukkit.getScheduler().runTaskTimer(
+                    plugin, this::updateAllNameTags, 20L, nameTagInterval);
+        }
         sortTask = Bukkit.getScheduler().runTaskTimer(
-                plugin, this::updateRankings, 40L, 100L);
+                plugin, this::updateRankings, 40L, sortInterval);
         saveTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (dirty) { save(); dirty = false; }
-        }, 6000L, 6000L);
+        }, saveInterval, saveInterval);
         weekCheckTask = Bukkit.getScheduler().runTaskTimer(
-                plugin, this::checkWeeklyReset, 6000L, 6000L);
+                plugin, this::checkWeeklyReset, weekCheckInterval, weekCheckInterval);
     }
 
     public void shutdown() {
@@ -252,24 +325,27 @@ public class GrindManager {
         if (weekCheckTask != null) weekCheckTask.cancel();
 
         Scoreboard sb = Bukkit.getScoreboardManager().getMainScoreboard();
-        Team team = sb.getTeam(TEAM_NAME);
-        if (team != null) {
-            for (String entry : new HashSet<>(team.getEntries())) {
-                team.removeEntry(entry);
+        for (Team t : new ArrayList<>(sb.getTeams())) {
+            if (t.getName().startsWith(TEAM_PREFIX)) {
+                for (String entry : new HashSet<>(t.getEntries())) {
+                    t.removeEntry(entry);
+                }
+                t.unregister();
             }
-            team.unregister();
         }
         save();
     }
+
+    // ==================== 数据持久化 ====================
 
     public void load() {
         if (!dataFile.exists()) {
             plugin.getLogger().info("[肝度] 无历史数据");
             return;
         }
-        FileConfiguration config = YamlConfiguration.loadConfiguration(dataFile);
+        FileConfiguration cfg = YamlConfiguration.loadConfiguration(dataFile);
 
-        ConfigurationSection section = config.getConfigurationSection("players");
+        ConfigurationSection section = cfg.getConfigurationSection("players");
         if (section != null) {
             for (String uuidStr : section.getKeys(false)) {
                 try {
@@ -284,14 +360,14 @@ public class GrindManager {
             }
         }
 
-        this.weekStartTime = config.getLong("weekly.weekStartTime", 0);
-        String kingStr = config.getString("weekly.weekKing", null);
+        this.weekStartTime = cfg.getLong("weekly.weekStartTime", 0);
+        String kingStr = cfg.getString("weekly.weekKing", null);
         if (kingStr != null) {
             try { this.weekKing = UUID.fromString(kingStr); }
             catch (IllegalArgumentException ignored) {}
         }
 
-        ConfigurationSection weekSection = config.getConfigurationSection("weekly.points");
+        ConfigurationSection weekSection = cfg.getConfigurationSection("weekly.points");
         if (weekSection != null) {
             for (String uuidStr : weekSection.getKeys(false)) {
                 try {
@@ -308,21 +384,21 @@ public class GrindManager {
     public void save() {
         try {
             if (!plugin.getDataFolder().exists()) plugin.getDataFolder().mkdirs();
-            FileConfiguration config = new YamlConfiguration();
+            FileConfiguration cfg = new YamlConfiguration();
 
             for (Map.Entry<UUID, Integer> entry : grindPoints.entrySet()) {
                 String path = "players." + entry.getKey().toString();
-                config.set(path + ".points", entry.getValue());
-                config.set(path + ".name", playerNames.getOrDefault(entry.getKey(), "未知"));
+                cfg.set(path + ".points", entry.getValue());
+                cfg.set(path + ".name", playerNames.getOrDefault(entry.getKey(), "未知"));
             }
 
-            config.set("weekly.weekStartTime", weekStartTime);
-            config.set("weekly.weekKing", weekKing != null ? weekKing.toString() : null);
+            cfg.set("weekly.weekStartTime", weekStartTime);
+            cfg.set("weekly.weekKing", weekKing != null ? weekKing.toString() : null);
             for (Map.Entry<UUID, Integer> entry : weeklyPoints.entrySet()) {
-                config.set("weekly.points." + entry.getKey().toString(), entry.getValue());
+                cfg.set("weekly.points." + entry.getKey().toString(), entry.getValue());
             }
 
-            config.save(dataFile);
+            cfg.save(dataFile);
         } catch (IOException e) {
             plugin.getLogger().warning("[肝度] 保存失败: " + e.getMessage());
         }

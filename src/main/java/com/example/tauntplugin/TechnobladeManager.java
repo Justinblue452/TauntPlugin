@@ -28,55 +28,40 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * Technoblade 猪神实体：
- * - 全局唯一
- * - 右键对话讲述猪神故事
- * - 喂土豆触发感谢
- * - 跟随拿土豆的玩家
- * - 被玩家攻击时，凝视玩家并慢慢撕碎他（★ 服主也不豁免）
- * - 生成时全服广播坐标
- */
 public class TechnobladeManager implements Listener {
 
     private final JavaPlugin plugin;
+    private final MessageManager messages;
     private final Random random = new Random();
-
     private final NamespacedKey TECHNO_KEY;
 
     private volatile UUID technoUuid = null;
 
-    private final Map<UUID, Long> lastTalk = new ConcurrentHashMap<>();
+    private final CooldownManager cooldowns;
     private static final long TALK_COOLDOWN_MS = 3_000L;
 
-    // ==================== 跟随参数 ====================
-    private static final double FOLLOW_SEARCH_RADIUS = 50.0;
-    private static final double FOLLOW_TELEPORT_DISTANCE = 25.0;
-    private static final double FOLLOW_STOP_DISTANCE = 4.0;
-    private static final double FOLLOW_SPEED = 0.28;
-    private static final long FOLLOW_INTERVAL_TICKS = 10L;
+    private double followSearchRadius;
+    private double followTeleportDistance;
+    private double followStopDistance;
+    private double followSpeed;
+    private long followIntervalTicks;
+
+    private int punishPhase1End;
+    private int punishPhase2End;
+    private int punishPhase3End;
+    private double punishLiftHeight;
 
     private BukkitTask followTask;
 
     private final Map<UUID, BukkitTask> punishingPlayers = new ConcurrentHashMap<>();
-
-    /** ★ 记录被惩罚玩家的原始游戏模式，重生后恢复 */
     private final Map<UUID, GameMode> pendingRespawnModes = new ConcurrentHashMap<>();
+    private final Set<UUID> followedPlayers = ConcurrentHashMap.newKeySet();
 
-    // ==================== 惩罚流程参数（tick 数）====================
-    private static final int PHASE1_END = 20;
-    private static final int PHASE2_END = 50;
-    private static final int PHASE3_END = 110;
-    private static final double LIFT_HEIGHT = 3.0;
-
-    // ==================== 猪神故事池 ====================
+    // ==================== 故事池（业务数据，保留在代码中）====================
     private static final List<String> TECHNO_STORIES = List.of(
             "你知道吗？我曾经在 Hypixel 起床战争里创下过 1818 连胜的纪录。倒数第二局，队友全倒了，我一个人单挑对面一整队，赢了。最后一局，我直接搭高台，邀请敌人来拆床，然后我们四个人一起跳下虚空。那才是真正的谢幕。",
             "我种过 21 亿个土豆。不是为了吃，是为了赢。那场「伟大的土豆战争」打了几个月，我和 Squid Kid 约定谁先种到 5 亿颗谁就赢。我边看《辉夜大小姐》边种，最后我赢了。",
@@ -101,21 +86,37 @@ public class TechnobladeManager implements Listener {
             "拿着土豆的人，就是我的朋友。跟着我，一起去冒险吧。"
     );
 
-    public TechnobladeManager(JavaPlugin plugin) {
+    public TechnobladeManager(JavaPlugin plugin, MessageManager messages, ConfigManager config) {
         this.plugin = plugin;
+        this.messages = messages;
         this.TECHNO_KEY = new NamespacedKey(plugin, "technoblade_entity");
+
+        this.cooldowns = new CooldownManager(plugin, TALK_COOLDOWN_MS, 0);
+
+        this.followSearchRadius = config.getDouble("technoblade.follow-search-radius", 50.0);
+        this.followTeleportDistance = config.getDouble("technoblade.follow-teleport-distance", 25.0);
+        this.followStopDistance = config.getDouble("technoblade.follow-stop-distance", 4.0);
+        this.followSpeed = config.getDouble("technoblade.follow-speed", 0.28);
+        this.followIntervalTicks = config.getLong("technoblade.follow-interval-ticks", 10);
+
+        this.punishPhase1End = config.getInt("technoblade.punish-phase1-end", 20);
+        this.punishPhase2End = config.getInt("technoblade.punish-phase2-end", 50);
+        this.punishPhase3End = config.getInt("technoblade.punish-phase3-end", 110);
+        this.punishLiftHeight = config.getDouble("technoblade.punish-lift-height", 3.0);
+
         loadExistingTechno();
         startFollowTask();
     }
 
     public void shutdown() {
         if (followTask != null) followTask.cancel();
-
         for (BukkitTask task : punishingPlayers.values()) {
             if (task != null) task.cancel();
         }
         punishingPlayers.clear();
         pendingRespawnModes.clear();
+        followedPlayers.clear();
+        if (cooldowns != null) cooldowns.shutdown();
     }
 
     // ==================== 加载已有实体 ====================
@@ -137,10 +138,7 @@ public class TechnobladeManager implements Listener {
         if (technoUuid != null) {
             Pig existing = findTechno();
             if (existing != null && existing.isValid()) {
-                if (player != null) {
-                    player.sendMessage(Component.text("猪神已经存在于世界上，无需重复生成。",
-                            NamedTextColor.YELLOW));
-                }
+                if (player != null) messages.send(player, "technoblade.already-exists");
                 return null;
             } else {
                 technoUuid = null;
@@ -153,47 +151,38 @@ public class TechnobladeManager implements Listener {
         Pig techno = world.spawn(location, Pig.class, pig -> {
             pig.customName(Component.text("Technoblade", NamedTextColor.GOLD));
             pig.setCustomNameVisible(true);
-
             pig.getPersistentDataContainer().set(TECHNO_KEY, PersistentDataType.BYTE, (byte) 1);
-
             pig.setPersistent(true);
             pig.setRemoveWhenFarAway(false);
             pig.setCollidable(false);
             pig.setSilent(false);
             pig.setAI(false);
             pig.setSaddle(false);
-
             pig.addScoreboardTag("technoblade");
         });
 
         technoUuid = techno.getUniqueId();
-        broadcastSpawn(techno, player);
+        broadcastSpawn(techno);
         return techno;
     }
 
     private Pig findTechno() {
         if (technoUuid == null) return null;
         Entity entity = Bukkit.getEntity(technoUuid);
-        if (entity instanceof Pig pig && pig.isValid()) {
-            return pig;
-        }
+        if (entity instanceof Pig pig && pig.isValid()) return pig;
         return null;
     }
 
-    private void broadcastSpawn(Pig techno, Player summoner) {
+    private void broadcastSpawn(Pig techno) {
         Location loc = techno.getLocation();
         String coords = String.format("(%d, %d, %d)",
                 loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
         String worldName = loc.getWorld() != null ? loc.getWorld().getName() : "未知";
 
-        Component broadcast = Component.text("👑 ", NamedTextColor.GOLD)
-                .append(Component.text("猪神 Technoblade ", NamedTextColor.GOLD))
-                .append(Component.text("降临了世界！\n", NamedTextColor.YELLOW))
-                .append(Component.text("📍 位置: ", NamedTextColor.GRAY))
-                .append(Component.text(coords + " @ " + worldName, NamedTextColor.AQUA))
-                .append(Component.text("\nTechnoblade never dies.", NamedTextColor.DARK_GRAY));
-
-        Bukkit.getServer().broadcast(broadcast);
+        messages.broadcast("technoblade.spawn-broadcast", Map.of(
+                "{coords}", coords,
+                "{world}", worldName
+        ));
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
@@ -201,7 +190,7 @@ public class TechnobladeManager implements Listener {
         }
     }
 
-    // ==================== 跟随拿土豆的玩家 ====================
+    // ==================== 跟随 ====================
     private void startFollowTask() {
         followTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             Pig techno = findTechno();
@@ -220,14 +209,13 @@ public class TechnobladeManager implements Listener {
 
             double dist = technoLoc.distance(targetLoc);
 
-            Vector toPlayer = targetLoc.toVector().subtract(technoLoc.toVector()).setY(0);
-            if (toPlayer.lengthSquared() > 0.01) {
-                toPlayer.normalize();
-                float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
-                techno.setRotation(yaw, 0);
+            TauntUtils.faceTo(techno, targetLoc);
+
+            if (dist < followTeleportDistance && followedPlayers.add(target.getUniqueId())) {
+                TauntUtils.unlock(plugin, target, AchievementManager.Ach.TECHNO_FOLLOWER);
             }
 
-            if (dist > FOLLOW_TELEPORT_DISTANCE) {
+            if (dist > followTeleportDistance) {
                 Vector dir = targetLoc.getDirection().setY(0);
                 if (dir.lengthSquared() > 0.01) dir.normalize();
                 Location behind = targetLoc.clone().subtract(dir.multiply(2.5));
@@ -235,11 +223,11 @@ public class TechnobladeManager implements Listener {
                 return;
             }
 
-            if (dist > FOLLOW_STOP_DISTANCE) {
+            if (dist > followStopDistance) {
                 Vector direction = targetLoc.toVector().subtract(technoLoc.toVector());
                 direction.setY(0);
                 if (direction.lengthSquared() > 0.01) {
-                    direction.normalize().multiply(FOLLOW_SPEED);
+                    direction.normalize().multiply(followSpeed);
                     techno.setVelocity(new Vector(
                             direction.getX(),
                             techno.getVelocity().getY(),
@@ -249,16 +237,16 @@ public class TechnobladeManager implements Listener {
             } else {
                 techno.setVelocity(new Vector(0, techno.getVelocity().getY(), 0));
             }
-        }, 0L, FOLLOW_INTERVAL_TICKS);
+        }, 0L, followIntervalTicks);
     }
 
     private Player findNearestPotatoHolder(Pig techno) {
         Player nearest = null;
-        double nearestDistSq = FOLLOW_SEARCH_RADIUS * FOLLOW_SEARCH_RADIUS;
+        double nearestDistSq = followSearchRadius * followSearchRadius;
 
         for (Player p : techno.getWorld().getPlayers()) {
             if (p.getGameMode().name().equals("SPECTATOR")) continue;
-            if (!isHoldingPotato(p)) continue;
+            if (!TauntUtils.isHolding(p, Material.POTATO)) continue;
 
             double distSq = p.getLocation().distanceSquared(techno.getLocation());
             if (distSq < nearestDistSq) {
@@ -269,13 +257,7 @@ public class TechnobladeManager implements Listener {
         return nearest;
     }
 
-    private boolean isHoldingPotato(Player player) {
-        if (player.getInventory().getItemInMainHand().getType() == Material.POTATO) return true;
-        if (player.getInventory().getItemInOffHand().getType() == Material.POTATO) return true;
-        return false;
-    }
-
-    // ==================== 被玩家攻击时的惩罚 ====================
+    // ==================== 惩罚 ====================
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onTechnoDamaged(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Pig pig)) return;
@@ -286,10 +268,7 @@ public class TechnobladeManager implements Listener {
         if (event instanceof EntityDamageByEntityEvent byEntity) {
             Entity damager = byEntity.getDamager();
             if (damager instanceof Player attacker) {
-                // ★ 只跳过旁观模式（旁观无法正常攻击，且无实体）
                 if (attacker.getGameMode() == GameMode.SPECTATOR) return;
-
-                // ★ 服主和创造模式玩家不再豁免
                 startPunishment(attacker, pig);
             }
         }
@@ -303,9 +282,6 @@ public class TechnobladeManager implements Listener {
         event.getPlayer().setInvulnerable(false);
     }
 
-    /**
-     * ★ 玩家重生时恢复原始游戏模式。
-     */
     @EventHandler
     public void onRespawn(PlayerRespawnEvent event) {
         UUID uuid = event.getPlayer().getUniqueId();
@@ -313,39 +289,29 @@ public class TechnobladeManager implements Listener {
         if (original == null) return;
 
         final Player player = event.getPlayer();
-        // 延迟 1 tick，等待玩家完全重生再恢复
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (player.isOnline()) {
                 player.setGameMode(original);
-                player.sendMessage(Component.text("已恢复你原本的游戏模式（"
-                        + original.name() + "）。", NamedTextColor.GRAY));
+                messages.send(player, "technoblade.mode-restored",
+                        Map.of("{mode}", original.name()));
             }
         }, 1L);
     }
 
-    /**
-     * 开始对攻击者进行"凝视惩罚"。
-     */
     private void startPunishment(Player attacker, Pig techno) {
         UUID uuid = attacker.getUniqueId();
-
         if (punishingPlayers.containsKey(uuid)) return;
 
-        // ★ 记录原始游戏模式，如果是创造/冒险，临时切到生存，让伤害和击杀生效
         GameMode originalMode = attacker.getGameMode();
         if (originalMode != GameMode.SURVIVAL) {
             pendingRespawnModes.put(uuid, originalMode);
             attacker.setGameMode(GameMode.SURVIVAL);
-            attacker.sendMessage(Component.text("你触怒了猪神，游戏模式被强制切换为生存。",
-                    NamedTextColor.DARK_RED));
+            messages.send(attacker, "technoblade.mode-forced");
         }
 
-        Component broadcast = Component.text("⚔ ", NamedTextColor.DARK_RED)
-                .append(Component.text(attacker.getName(), NamedTextColor.YELLOW))
-                .append(Component.text(" 攻击了猪神 ", NamedTextColor.RED))
-                .append(Component.text("Technoblade", NamedTextColor.GOLD))
-                .append(Component.text("，猪神开始凝视他……", NamedTextColor.DARK_RED));
-        Bukkit.getServer().broadcast(broadcast);
+        messages.broadcast("technoblade.punish-start", Map.of(
+                "{player}", attacker.getName()
+        ));
 
         final Location startLoc = attacker.getLocation().clone();
         final double startHealth = attacker.getHealth();
@@ -368,7 +334,6 @@ public class TechnobladeManager implements Listener {
                 attacker.setInvulnerable(false);
                 taskHolder[0].cancel();
                 punishingPlayers.remove(uuid);
-                // 恢复游戏模式
                 GameMode orig = pendingRespawnModes.remove(uuid);
                 if (orig != null) attacker.setGameMode(orig);
                 return;
@@ -376,73 +341,52 @@ public class TechnobladeManager implements Listener {
 
             int t = tick[0]++;
 
-            // ===== T+0：凝视开始 =====
             if (t == 0) {
-                Vector toPlayer = attacker.getLocation().toVector()
-                        .subtract(pig.getLocation().toVector()).setY(0).normalize();
-                float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
-                pig.setRotation(yaw, 0);
-
-                pig.getWorld().playSound(pig.getLocation(),
-                        Sound.ENTITY_PIG_AMBIENT, 1.0f, 0.5f);
-                attacker.playSound(attacker.getLocation(),
-                        Sound.ENTITY_ENDERMAN_STARE, 1.0f, 0.5f);
-                attacker.playSound(attacker.getLocation(),
-                        Sound.ENTITY_WARDEN_HEARTBEAT, 1.0f, 0.5f);
+                TauntUtils.faceTo(pig, attacker.getLocation());
+                pig.getWorld().playSound(pig.getLocation(), Sound.ENTITY_PIG_AMBIENT, 1.0f, 0.5f);
+                attacker.playSound(attacker.getLocation(), Sound.ENTITY_ENDERMAN_STARE, 1.0f, 0.5f);
+                attacker.playSound(attacker.getLocation(), Sound.ENTITY_WARDEN_HEARTBEAT, 1.0f, 0.5f);
             }
 
-            // ===== 阶段1（0~20）：凝视 + 视角锁定 =====
-            if (t <= PHASE1_END) {
+            if (t <= punishPhase1End) {
                 lockViewToTechno(attacker, pig, startLoc);
             }
 
-            // ===== 阶段2（20~50）：抬升 3 格 =====
-            if (t > PHASE1_END && t <= PHASE2_END) {
-                double progress = (t - PHASE1_END) / (double) (PHASE2_END - PHASE1_END);
+            if (t > punishPhase1End && t <= punishPhase2End) {
+                double progress = (t - punishPhase1End) / (double) (punishPhase2End - punishPhase1End);
                 Location loc = startLoc.clone();
-                loc.add(0, LIFT_HEIGHT * progress, 0);
+                loc.add(0, punishLiftHeight * progress, 0);
                 lockViewToTechno(attacker, pig, loc);
 
                 if (t % 3 == 0) {
-                    try {
-                        attacker.getWorld().spawnParticle(Particle.CLOUD,
-                                attacker.getLocation().add(0, 0.2, 0),
-                                5, 0.3, 0.1, 0.3, 0.02);
-                    } catch (Throwable ignored) {}
+                    Location al = attacker.getLocation();
+                    TauntUtils.spawnParticleSafe(attacker.getWorld(), Particle.CLOUD,
+                            al.getX(), al.getY() + 0.2, al.getZ(),
+                            5, 0.3, 0.1, 0.3, 0.02);
                 }
             }
 
-            // ===== 阶段3（50~110）：慢慢扣血 =====
-            if (t > PHASE2_END && t <= PHASE3_END) {
-                double progress = (t - PHASE2_END) / (double) (PHASE3_END - PHASE2_END);
+            if (t > punishPhase2End && t <= punishPhase3End) {
+                double progress = (t - punishPhase2End) / (double) (punishPhase3End - punishPhase2End);
                 Location loc = startLoc.clone();
-                loc.add(0, LIFT_HEIGHT, 0);
+                loc.add(0, punishLiftHeight, 0);
                 lockViewToTechno(attacker, pig, loc);
 
                 double newHealth = startHealth * (1.0 - progress);
                 if (newHealth < 0.5) newHealth = 0.5;
-                try {
-                    attacker.setHealth(newHealth);
-                } catch (Throwable ignored) {}
+                try { attacker.setHealth(newHealth); } catch (Throwable ignored) {}
 
                 if (t % 5 == 0) {
-                    try {
-                        attacker.playHurtAnimation(attacker.getLocation().getYaw());
-                    } catch (Throwable ignored) {}
-
-                    try {
-                        attacker.getWorld().spawnParticle(Particle.DAMAGE_INDICATOR,
-                                attacker.getLocation().add(0, 1.0, 0),
-                                5, 0.5, 0.5, 0.5, 0.1);
-                    } catch (Throwable ignored) {}
-
-                    attacker.playSound(attacker.getLocation(),
-                            Sound.ENTITY_PLAYER_HURT, 0.8f, 1.0f);
+                    try { attacker.playHurtAnimation(attacker.getLocation().getYaw()); } catch (Throwable ignored) {}
+                    Location al = attacker.getLocation();
+                    TauntUtils.spawnParticleSafe(attacker.getWorld(), Particle.DAMAGE_INDICATOR,
+                            al.getX(), al.getY() + 1.0, al.getZ(),
+                            5, 0.5, 0.5, 0.5, 0.1);
+                    attacker.playSound(attacker.getLocation(), Sound.ENTITY_PLAYER_HURT, 0.8f, 1.0f);
                 }
             }
 
-            // ===== 阶段4（110）：撕裂 =====
-            if (t >= PHASE3_END) {
+            if (t >= punishPhase3End) {
                 tearApart(attacker, pig);
                 taskHolder[0].cancel();
                 punishingPlayers.remove(uuid);
@@ -454,90 +398,45 @@ public class TechnobladeManager implements Listener {
 
     private void lockViewToTechno(Player player, Pig techno, Location base) {
         Location loc = base.clone();
-
         Location eye = player.getEyeLocation();
         Vector fromEye = loc.clone().add(0, eye.getY() - player.getLocation().getY(), 0).toVector();
         Vector toTechno = techno.getEyeLocation().toVector().subtract(fromEye);
         if (toTechno.lengthSquared() > 0.01) {
             loc.setDirection(toTechno);
         }
-
         player.teleport(loc);
     }
 
-    /**
-     * 撕裂效果：多重粒子 + 音效 + 秒杀（多重保险机制）。
-     */
     private void tearApart(Player attacker, Pig techno) {
         Location loc = attacker.getLocation();
         World world = attacker.getWorld();
 
-        try {
-            world.spawnParticle(Particle.SOUL_FIRE_FLAME, loc, 60, 1.0, 1.5, 1.0, 0.1);
-        } catch (Throwable ignored) {}
-
-        try {
-            world.spawnParticle(Particle.DUST, loc, 50, 0.8, 1.5, 0.8, 0.1,
-                    new Particle.DustOptions(org.bukkit.Color.RED, 2.0f));
-        } catch (Throwable ignored) {}
-
-        try {
-            world.spawnParticle(Particle.LARGE_SMOKE, loc, 30, 1.0, 1.5, 1.0, 0.05);
-        } catch (Throwable ignored) {}
-
-        try {
-            world.spawnParticle(Particle.EXPLOSION, loc, 3, 0.5, 1.0, 0.5, 0);
-        } catch (Throwable ignored) {}
-
-        try {
-            world.spawnParticle(Particle.END_ROD, loc, 25, 0.5, 1.5, 0.5, 0.1);
-        } catch (Throwable ignored) {}
+        TauntUtils.spawnParticleSafe(world, Particle.SOUL_FIRE_FLAME,
+                loc.getX(), loc.getY(), loc.getZ(), 60, 1.0, 1.5, 1.0, 0.1);
+        TauntUtils.spawnParticleSafe(world, Particle.DUST,
+                loc.getX(), loc.getY(), loc.getZ(), 50, 0.8, 1.5, 0.8, 0.1,
+                new Particle.DustOptions(org.bukkit.Color.RED, 2.0f));
+        TauntUtils.spawnParticleSafe(world, Particle.LARGE_SMOKE,
+                loc.getX(), loc.getY(), loc.getZ(), 30, 1.0, 1.5, 1.0, 0.05);
+        TauntUtils.spawnParticleSafe(world, Particle.EXPLOSION,
+                loc.getX(), loc.getY(), loc.getZ(), 3, 0.5, 1.0, 0.5, 0);
+        TauntUtils.spawnParticleSafe(world, Particle.END_ROD,
+                loc.getX(), loc.getY(), loc.getZ(), 25, 0.5, 1.5, 0.5, 0.1);
 
         world.strikeLightningEffect(loc);
         world.playSound(loc, Sound.ENTITY_WITHER_DEATH, 1.0f, 0.5f);
         world.playSound(loc, Sound.ENTITY_LIGHTNING_BOLT_THUNDER, 1.0f, 1.0f);
         world.playSound(loc, Sound.ENTITY_PLAYER_DEATH, 1.0f, 0.5f);
 
-        techno.getWorld().playSound(techno.getLocation(),
-                Sound.ENTITY_PIG_AMBIENT, 1.0f, 0.6f);
+        techno.getWorld().playSound(techno.getLocation(), Sound.ENTITY_PIG_AMBIENT, 1.0f, 0.6f);
 
-        // ★ 击杀多重保险机制
-        attacker.setInvulnerable(false);
-        attacker.setNoDamageTicks(0);
-        attacker.setHealth(0.0);
+        TauntUtils.killPlayer(plugin, attacker);
 
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (attacker.isOnline() && attacker.getHealth() > 0) {
-                attacker.setInvulnerable(false);
-                attacker.setNoDamageTicks(0);
-                attacker.setHealth(0.0);
-            }
-        });
+        messages.broadcast("technoblade.punish-kill", Map.of(
+                "{player}", attacker.getName()
+        ));
 
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (attacker.isOnline() && attacker.getHealth() > 0) {
-                attacker.setInvulnerable(false);
-                attacker.setNoDamageTicks(0);
-                attacker.damage(Double.MAX_VALUE);
-            }
-        }, 2L);
-
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (attacker.isOnline() && attacker.getHealth() > 0) {
-                attacker.setInvulnerable(false);
-                attacker.setNoDamageTicks(0);
-                attacker.setHealth(0.0);
-                if (attacker.getHealth() > 0) {
-                    attacker.damage(Double.MAX_VALUE);
-                }
-            }
-        }, 5L);
-
-        Bukkit.getServer().broadcast(Component.text("💀 ", NamedTextColor.DARK_RED)
-                .append(Component.text(attacker.getName(), NamedTextColor.YELLOW))
-                .append(Component.text(" 被猪神 ", NamedTextColor.RED))
-                .append(Component.text("Technoblade", NamedTextColor.GOLD))
-                .append(Component.text(" 撕碎了。", NamedTextColor.RED)));
+        TauntUtils.unlock(plugin, attacker, AchievementManager.Ach.KILLED_BY_TECHNO);
     }
 
     // ==================== 交互 ====================
@@ -547,19 +446,15 @@ public class TechnobladeManager implements Listener {
 
         Entity clicked = event.getRightClicked();
         if (!(clicked instanceof Pig pig)) return;
-
         if (!pig.getPersistentDataContainer().has(TECHNO_KEY, PersistentDataType.BYTE)) return;
 
         Player player = event.getPlayer();
         event.setCancelled(true);
 
-        long now = System.currentTimeMillis();
-        Long last = lastTalk.get(player.getUniqueId());
-        if (last != null && now - last < TALK_COOLDOWN_MS) {
-            player.sendMessage(Component.text("猪神正在思考……稍后再试。", NamedTextColor.GRAY));
+        if (!cooldowns.isReady(player.getUniqueId(), "talk")) {
+            messages.send(player, "technoblade.thinking");
             return;
         }
-        lastTalk.put(player.getUniqueId(), now);
 
         ItemStack hand = player.getInventory().getItemInMainHand();
 
@@ -575,63 +470,48 @@ public class TechnobladeManager implements Listener {
 
         String thanks = POTATO_THANKS.get(ThreadLocalRandom.current().nextInt(POTATO_THANKS.size()));
 
-        player.sendMessage(Component.text("🥔 你喂了猪神一颗土豆……", NamedTextColor.YELLOW));
-        player.sendMessage(Component.text("👑 Technoblade: ", NamedTextColor.GOLD)
-                .append(Component.text(thanks, NamedTextColor.WHITE)));
+        messages.send(player, "technoblade.potato-prefix");
+        messages.send(player, "technoblade.potato-thanks", Map.of("{text}", thanks));
 
         player.playSound(player.getLocation(), Sound.ENTITY_PIG_AMBIENT, 1.0f, 1.2f);
 
         Location loc = pig.getLocation().add(0, 1.5, 0);
-        try {
-            pig.getWorld().spawnParticle(Particle.ITEM, loc, 15, 0.3, 0.3, 0.3, 0.1,
-                    new ItemStack(Material.POTATO));
-        } catch (Throwable ignored) {}
-        try {
-            pig.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, loc, 10, 0.5, 0.5, 0.5, 0.0);
-        } catch (Throwable ignored) {}
+        TauntUtils.spawnParticleSafe(pig.getWorld(), Particle.ITEM,
+                loc.getX(), loc.getY(), loc.getZ(), 15, 0.3, 0.3, 0.3, 0.1,
+                new ItemStack(Material.POTATO));
+        TauntUtils.spawnParticleSafe(pig.getWorld(), Particle.HAPPY_VILLAGER,
+                loc.getX(), loc.getY(), loc.getZ(), 10, 0.5, 0.5, 0.5, 0.0);
 
         pig.setVelocity(pig.getVelocity().setY(0.3));
+
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.MEET_TECHNO);
+        TauntUtils.increment(plugin, player, "techno_fed", 1);
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.FEED_TECHNO);
     }
 
     private void handleStory(Player player, Pig pig) {
         String story = TECHNO_STORIES.get(ThreadLocalRandom.current().nextInt(TECHNO_STORIES.size()));
 
-        player.sendMessage(Component.text("═══════════════════════", NamedTextColor.GOLD));
-        player.sendMessage(Component.text("👑 Technoblade: ", NamedTextColor.GOLD)
-                .append(Component.text(story, NamedTextColor.WHITE)));
-        player.sendMessage(Component.text("═══════════════════════", NamedTextColor.GOLD));
+        messages.send(player, "technoblade.story-header");
+        messages.send(player, "technoblade.story-prefix", Map.of("{text}", story));
+        messages.send(player, "technoblade.story-footer");
 
         player.playSound(player.getLocation(), Sound.ENTITY_PIG_AMBIENT, 0.8f, 1.0f);
         player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_TRADE, 0.5f, 1.5f);
 
-        Location pigLoc = pig.getLocation();
-        Vector toPlayer = player.getLocation().toVector()
-                .subtract(pigLoc.toVector()).setY(0);
-        if (toPlayer.lengthSquared() > 0.01) {
-            toPlayer.normalize();
-            float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
-            pig.setRotation(yaw, 0);
-        }
+        TauntUtils.faceTo(pig, player.getLocation());
+
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.MEET_TECHNO);
     }
 
     // ==================== 查询 ====================
-    public boolean isTechnoAlive() {
-        return findTechno() != null;
-    }
-
-    public UUID getTechnoUuid() {
-        return technoUuid;
-    }
-
-    public Pig getTechno() {
-        return findTechno();
-    }
+    public boolean isTechnoAlive() { return findTechno() != null; }
+    public UUID getTechnoUuid() { return technoUuid; }
+    public Pig getTechno() { return findTechno(); }
 
     public void removeTechnoblade() {
         Pig pig = findTechno();
-        if (pig != null) {
-            pig.remove();
-        }
+        if (pig != null) pig.remove();
         technoUuid = null;
     }
 

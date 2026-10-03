@@ -1,574 +1,542 @@
-# TauntPlugin 插件使用教程
+# TauntPlugin
 
-一个集**调侃、恐怖氛围、社交互动、肝度排行**于一体的 Minecraft Paper 服务器插件。
+一个功能丰富的 Minecraft Paper 服务器插件，集调侃、魔法、恐怖、社交、成就于一体。
+
+支持版本：**Paper 1.21.4+**（开发目标 Paper 26.3）
 
 ---
 
 ## 📖 目录
 
-1. [插件简介](#插件简介)
-2. [安装要求](#安装要求)
-3. [安装步骤](#安装步骤)
-4. [功能总览](#功能总览)
-5. [命令详解](#命令详解)
-6. [功能详解](#功能详解)
-7. [配置文件](#配置文件)
-8. [可调参数](#可调参数)
-9. [常见问题](#常见问题)
-
----
-
-## 插件简介
-
-**TauntPlugin** 是一个综合性的服务器氛围增强插件，包含以下核心模块：
-
-| 模块 | 作用 |
-| :--- | :--- |
-| 🎭 **调侃系统** | 玩家各种行为触发服务器调侃 |
-| 👻 **幽灵系统** | 服主幽灵偷物品，30 秒后归还 |
-| 🐾 **生物吐槽** | 44 种生物对玩家开口说话 |
-| 🏆 **肝度排行榜** | 挖/放方块累计肝度，周榜排名 |
-| 🌑 **血月事件** | 夜晚随机触发，怪物强化 |
-| 👁️ **Herobrine** | 背后恐吓、追踪、留言、床边出现 |
-| 💀 **幽灵模式** | 死亡后进入幽灵状态，物品掉落 |
-| 😰 **玩家状态效果** | 冒汗、惊恐、饥饿、白雾 |
-| 💬 **玩家嘲讽** | 玩家互相嘲讽，支持自定义文案 |
-| 👤 **诡异村民** | 远处出现诡异村民盯着你 |
-| 🌫️ **玩家影分身** | 野外出现自己的影子 |
-| 💚 **好友系统** | 添加好友、免费传送、上下线通知 |
-| 🎲 **猜数字游戏** | 定时开启，猜中奖励肝度 |
-
----
-
-## 安装要求
-
-| 项目 | 要求 |
-| :--- | :--- |
-| **服务端** | Paper 26.3 或更高 |
-| **Java** | JDK 25 |
-| **Minecraft** | 1.21.9+ |
-
----
-
-## 安装步骤
-
-### 1. 构建插件
-
-```powershell
-cd D:\Projects\TauntPlugin
-.\gradlew.bat build
-```
-
-### 2. 部署
-
-将 `build/libs/TauntPlugin-1.0.0.jar` 复制到服务器的 `plugins` 文件夹。
-
-### 3. 重启服务器
-
-**完整重启服务器**（不是 `/reload`）。
-
-### 4. 验证
-
-启动日志应显示：
-
-```
-[TauntPlugin] TauntPlugin 已启用：调侃、幽灵、生物、肝度、血月、Herobrine、幽灵模式、状态效果、嘲讽、好友、猜数字同时上线。
-```
+- [功能总览](#功能总览)
+- [安装](#安装)
+- [命令](#命令)
+- [权限](#权限)
+- [配置文件](#配置文件)
+- [玩法指南](#玩法指南)
+- [开发者 API](#开发者-api)
+- [常见问题](#常见问题)
 
 ---
 
 ## 功能总览
 
-### 🎭 调侃系统
+TauntPlugin 包含 **19 个独立模块**，所有模块可通过 `config.yml` 单独开关。
 
-玩家各种行为触发全服广播调侃：
-
-| 触发行为 | 调侃示例 |
-| :--- | :--- |
-| **聊天** | `Steve 又在聊天了，是没人陪你说话吗？` |
-| **移动** | `Alex 你是在梦游吗？` |
-| **挖方块** | `Notch 挖了 钻石矿石，是想盖别墅还是拆家？` |
-| **放方块** | `Steve 放了 泥土，是打算盖什么？` |
-| **死亡** | `Alex 死在了 僵尸 手里，真是精彩。` |
-| **加入** | `欢迎 Notch 回到这个充满伤害的地方。` |
-| **攻击** | `Steve 在攻击 苦力怕，脾气不小啊。` |
-| **吃东西** | `Alex 又饿了，吃饱了才有力气送。` |
-| **钓鱼** | `Notch 又在摸鱼（字面意思）。` |
-| **升级** | `Steve 升到了 30 级，恭喜（但还是菜）。` |
-| **摔落** | `Alex 从高处摔下来了，这就是重力吗？` |
-| **潜行** | `Notch 潜行了，是怕被人发现吗？` |
-
-**特别功能**：
-
-- **服主欢迎**：服主上线时，全服标题 + 音效 + 烟花 + 专属广播
-- **服主讣告**：服主死亡时，全服标题 + 音效 + 讣告广播
-- **自动道歉**：调侃服主 1.5 秒后，系统自动道歉
-
-### 👻 幽灵系统
-
-服主幽灵每 1~3 分钟随机偷一名玩家的物品，30 秒后归还。
-
-**幽灵会在以下情况空手而归**：
-
-- 玩家背包为空
-- 玩家是创造/旁观模式
-- 玩家在 5 分钟冷却内
-
-### 🐾 生物吐槽
-
-44 种生物会根据与玩家的距离开口说话：
-
-```
-[僵尸] Steve 的脑子看起来很新鲜……
-[村民] Alex 又来砍价了，我这已经是最低价了。
-[猪灵] Notch，金锭有吗？没有就走开。
-[铁傀儡] Steve，我守护村民，也守护你。
-```
-
-**支持的生物**：僵尸、骷髅、苦力怕、蜘蛛、末影人、女巫、村民、掠夺者、卫道士、唤魔者、猪灵、疣猪兽、监守者等 44 种。
-
-### 🏆 肝度排行榜
-
-- **每挖一个方块 +1 肝度**
-- **每放一个方块 +1 肝度**
-
-**头顶名牌显示**：
-
-```
-[👑肝帝] [#1] ❤20 Steve
-[#7] ❤18 Alex
-[--] ❤20 Justin_Yan
-```
-
-**每周一 00:00 结算**：周肝度第一名获得 `[👑肝帝]` 称号，为期一周。
-
-### 🌑 血月事件
-
-- **触发条件**：夜晚随机触发（15% 概率）
-- **持续时间**：5 分钟
-- **怪物强化**：血量 ×2、速度 ×1.3、攻击 ×1.3
-- **视觉增强**：BossBar 倒计时 + 怪物头顶标记 + 黑暗效果
-- **死亡文案**：切换为恐怖风格
-
-### 👁️ Herobrine
-
-四种 Herobrine 恐吓：
-
-| 类型 | 触发方式 | 效果 |
-| :--- | :--- | :--- |
-| **背后恐吓** | 每 2 分钟，30% 概率 | 身后 6 格出现，看/靠近消失 |
-| **追踪型** | 每 3 分钟，25% 概率 | 保持 10 格距离跟随 30 秒 |
-| **告示牌留言** | 每 3 分钟，20% 概率 | 附近出现"我看到你了"告示牌 |
-| **床边 Mannequin** | 睡觉时 50% 概率 | 床边出现 Mannequin |
-
-### 💀 幽灵模式
-
-玩家**受到致死伤害**（没有不死图腾）时进入幽灵模式：
-
-- **视角**：旁观者模式，可以自由飞行
-- **物品球体**：背包物品围绕玩家形成旋转球体
-- **倒计时**：ActionBar 显示剩余秒数
-- **持续**：30 秒
-- **重生**：在床/主城重生，物品掉落在幽灵结束位置
-
-**不死图腾兼容**：持有不死图腾时，原版机制优先，不触发幽灵模式。
-
-### 😰 玩家状态效果
-
-| 状态 | 触发条件 | 效果 |
-| :--- | :--- | :--- |
-| **冒汗** | 血量 < 50% / 炎热环境 / 疾跑 8 秒 | 汗珠粒子 |
-| **惊恐** | 血量 < 25% | 心跳音效 + 受伤动画 + 速度 I + 虚弱 I + 攻击减弱 30% + 击退加强 3 倍 |
-| **饥饿生气** | 饱食度 < 50% | 村民生气粒子 |
-| **呼出白雾** | 寒冷生物群系 | 嘴部呼吸白雾粒子 |
-
-**惊恐锁定**：进入惊恐后锁定 15 秒，血量恢复也不会立即退出。
-
-### 💬 玩家嘲讽
-
-玩家之间可以互相嘲讽：
-
-- `/taunt` 嘲讽最近玩家
-- `/taunt <玩家名>` 嘲讽指定玩家
-- `/taunt set <文案>` 设置自定义文案
-- `/taunt list` 查看自定义文案
-- `/taunt remove <序号>` 删除指定文案
-- `/taunt clear` 清空自定义文案
-
-**自定义文案支持占位符**：`%target%`（被嘲讽者名字）
-
-### 👤 诡异村民
-
-每 5 分钟检查一次，20% 概率触发。远处出现一个"???"村民，它不交易、不说话，只是盯着玩家，玩家靠近 8 格内消失。
-
-### 🌫️ 玩家影分身
-
-每 5 分钟检查一次，25% 概率触发。玩家在野外时，正前方 20 格出现一个"自己"的影子，3 秒后消失。
-
-### 💚 好友系统
-
-- `/friend add <玩家>` 添加好友
-- `/friend remove <玩家>` 删除好友
-- `/friend list` 查看好友列表（● 在线 / ○ 离线）
-- `/friend tp <玩家>` 免费传送到好友
-
-**上下线通知**：好友上线/下线时，你会收到提示。
-
-### 🎲 猜数字游戏
-
-每 5 分钟自动开启一局：
-
-```
-[服务器] 🎲 猜数字游戏开始！
-[服务器] 我想了一个 1~100 之间的数字
-[服务器] 在聊天栏直接输入数字即可猜，猜中奖励 100 肝度
-[服务器] 限时 3 分钟，加油！
-```
-
-玩家在聊天栏**直接输入数字**即可猜，猜中奖励 100 肝度。
+| 模块 | 说明 |
+|------|------|
+| **调侃系统** | 玩家聊天、移动、挖矿、死亡等行为触发调侃文案 |
+| **服主的幽灵** | 幽灵随机偷走玩家物品，30 秒后归还 |
+| **生物吐槽** | 30+ 种生物开口对玩家说话 |
+| **肝度排行榜** | 按挖矿/放置方块统计肝度，周榜肝帝 |
+| **血月事件** | 夜晚随机触发，怪物增强，全服公告 |
+| **Herobrine** | 背后凝视、远处跟踪、床边出现、留言告示牌 |
+| **幽灵模式** | 死亡时进入 30 秒幽灵状态，物品掉落在死亡地点 |
+| **玩家状态效果** | 惊恐、冒汗、寒冷白雾呼吸、饥饿愤怒 |
+| **玩家嘲讽** | `/taunt` 命令，支持自定义嘲讽文案 |
+| **诡异村民** | 短暂出现的诡异村民跟踪玩家 |
+| **影分身** | 玩家前方出现自己的分身 |
+| **好友系统** | 添加好友、好友上线提示、免费传送 |
+| **猜数字游戏** | 聊天栏输入数字猜答案，赢取肝度 |
+| **猪神 Technoblade** | 传奇猪神降临，可与玩家互动 |
+| **处决系统** | `/chujue` 处决玩家/实体/范围 |
+| **魔杖系统** | **16+ 种魔咒，属性系统，亲和度，不可饶恕咒** |
+| **许愿井** | 投入金属抽奖，可重铸魔杖 |
+| **私人傀儡** | 用玩家 ID 命名的南瓜头搭建专属傀儡 |
+| **成就系统** | 50+ 个成就，全服广播 |
 
 ---
 
-## 命令详解
+## 安装
 
-### `/grind`
+### 环境要求
 
-查看肝度排行榜。
+| 项目 | 版本 |
+|------|------|
+| 服务端 | Paper 1.21.4+ |
+| Java | 21+ |
+| 必需依赖 | 无（Paper API 自带） |
 
-| 命令 | 功能 |
-| :--- | :--- |
-| `/grind` | 查看自己的肝度、本周肝度、排名 |
-| `/grind top [数量]` | 查看总排行榜 |
-| `/grind weekly [数量]` | 查看本周排行榜 |
+### 安装步骤
 
-**别名**：`/g`、`/gd`
+1. 下载 `TauntPlugin.jar`
+2. 放入服务端 `plugins/` 文件夹
+3. 启动服务器，插件自动生成配置
+4. 编辑 `plugins/TauntPlugin/config.yml` 按需调整
+5. 重启服务器或执行 `/taunt reload`
 
-### `/taunt`
+### 资源包（可选）
 
-玩家嘲讽系统。
+魔杖使用 `ItemModel` 让钓竿显示为木棍，**不需要资源包**。所有功能在无资源包环境下也能正常工作。
 
-| 命令 | 功能 |
-| :--- | :--- |
+---
+
+## 命令
+
+### `/taunt` — 玩家嘲讽
+
+| 命令 | 说明 |
+|------|------|
 | `/taunt` | 嘲讽最近的玩家 |
 | `/taunt <玩家名>` | 嘲讽指定玩家 |
 | `/taunt set <文案>` | 添加自定义嘲讽文案 |
-| `/taunt list` | 查看你的自定义文案 |
+| `/taunt list` | 查看自定义文案 |
 | `/taunt remove <序号>` | 删除指定文案 |
-| `/taunt clear` | 清除所有自定义文案 |
-| `/taunt help` | 查看帮助 |
+| `/taunt clear` | 清空自定义文案 |
+| `/taunt reload` | 重载配置和消息 |
 
-**别名**：`/t`、`/ck`
+### `/wand` — 获取魔杖
 
-### `/friend`
+| 命令 | 说明 |
+|------|------|
+| `/wand` | 获取一根随机属性的魔杖 |
 
-好友系统。
+**魔杖操作**：
+- **Shift + 右键** — 切换魔咒
+- **右键** — 发射当前魔咒
 
-| 命令 | 功能 |
-| :--- | :--- |
+### `/puppet` — 私人傀儡
+
+| 命令 | 说明 |
+|------|------|
+| `/puppet <玩家名>` | 获得效忠指定玩家的傀儡南瓜头 |
+
+### `/techno` — 猪神
+
+| 命令 | 说明 |
+|------|------|
+| `/techno spawn` | 在当前位置生成猪神 |
+| `/techno remove` | 移除猪神 |
+| `/techno status` | 查看猪神状态 |
+
+### `/chujue` — 处决
+
+| 命令 | 说明 |
+|------|------|
+| `/chujue <玩家名>` | 处决指定玩家 |
+| `/chujue near <半径>` | 处决范围内所有实体 |
+| `/chujue type <实体类型> [半径]` | 处决指定类型实体 |
+| `/chujue look [距离]` | 处决视线内实体 |
+
+### `/friend` — 好友
+
+| 命令 | 说明 |
+|------|------|
 | `/friend add <玩家>` | 添加好友 |
 | `/friend remove <玩家>` | 删除好友 |
-| `/friend list` | 查看好友列表 |
-| `/friend tp <玩家>` | 传送到好友 |
+| `/friend list` | 好友列表 |
+| `/friend tp <玩家>` | 传送到好友（免费） |
 
-**别名**：`/f`、`/fr`
+### `/grind` — 肝度排行
+
+| 命令 | 说明 |
+|------|------|
+| `/grind` | 查看自己的肝度 |
+| `/grind top [数量]` | 总榜前 N 名 |
+| `/grind weekly [数量]` | 周榜前 N 名 |
+
+### `/ach` — 成就
+
+| 命令 | 说明 |
+|------|------|
+| `/ach` | 查看自己的成就进度 |
+| `/ach list` | 列出所有成就 |
+| `/ach stats` | 查看统计数据 |
+| `/ach <玩家名>` | 查看他人成就 |
 
 ---
 
-## 功能详解
+## 权限
 
-### 肝度获取
-
-| 行为 | 肝度 |
-| :--- | :--- |
-| 挖 1 个方块 | +1 |
-| 放 1 个方块 | +1 |
-| 猜数字猜中 | +100 |
-
-### 肝帝称号
-
-每周一 00:00 自动结算：
-
-- 周肝度第一名获得 `[👑肝帝]` 称号
-- 头顶名牌显示 `[👑肝帝] [#排名] ❤血量`
-- 称号持续一周
-
-### 幽灵模式触发
-
-| 情况 | 结果 |
-| :--- | :--- |
-| 玩家受到致死伤害，**没有**不死图腾 | 进入幽灵模式 |
-| 玩家受到致死伤害，**有**不死图腾 | 原版图腾消耗，不触发幽灵模式 |
-| 玩家在幽灵模式中再次受到伤害 | 无效果（旁观者模式） |
-
-### 惊恐状态
-
-**触发**：血量 < 25%
-
-**持续**：进入后锁定 15 秒，期间血量恢复不退出
-
-**效果**：
-
-- 每 1 秒心跳音效
-- 每 1.5 秒受伤动画
-- 红色粒子围绕头部
-- Speed I + Weakness I
-- 攻击力 ×0.7
-- 击退力 ×3
+| 权限节点 | 说明 | 默认 |
+|---------|------|------|
+| `tauntplugin.reload` | 允许重载配置 | OP |
+| `tauntplugin.techno` | 允许管理猪神 | OP |
+| `tauntplugin.chujue` | 允许处决玩家 | OP |
+| `tauntplugin.puppet` | 允许使用私人傀儡 | 所有玩家 |
 
 ---
 
 ## 配置文件
 
-插件会在 `plugins/TauntPlugin/` 下生成以下文件：
-
-| 文件 | 用途 |
-| :--- | :--- |
-| `grind.yml` | 肝度数据和周肝帝记录 |
-| `custom_taunts.yml` | 玩家的自定义嘲讽文案 |
-| `friends.yml` | 好友关系数据 |
-
-### `grind.yml` 结构
+`plugins/TauntPlugin/config.yml` 结构（默认值）：
 
 ```yaml
-players:
-  <uuid>:
-    name: Steve
-    points: 1234
-weekly:
-  weekStartTime: 1735660800000
-  weekKing: <uuid>
-  points:
-    <uuid>: 567
-```
+general:
+  owner-name: "Justin_Yan"
 
-### `custom_taunts.yml` 结构
+taunt:
+  enabled: true
+  global-cooldown-ms: 3000
+  actions:
+    chat:      { cooldown: 25000, chance: 0.35 }
+    move:      { cooldown: 60000, chance: 0.25 }
+    break:     { cooldown: 20000, chance: 0.4  }
+    # ... 更多行为
 
-```yaml
-<uuid>:
-  - '%target% 你太菜了'
-  - '就这？我还以为多厉害呢'
-```
+ghost:
+  enabled: true
+  steal-interval-min-ms: 60000
+  steal-interval-max-ms: 180000
+  return-delay-ms: 30000
+  player-cooldown-ms: 300000
 
-### `friends.yml` 结构
+mob-taunt:
+  enabled: true
+  check-interval-ms: 20000
+  player-cooldown-ms: 120000
+  trigger-chance: 0.7
+  scan-radius: 16.0
 
-```yaml
-<uuid>:
-  - <friend-uuid-1>
-  - <friend-uuid-2>
+grind:
+  enabled: true
+  show-name-tag: true
+
+blood-moon:
+  enabled: true
+  check-interval-ms: 60000
+  trigger-chance: 0.15
+  duration-ms: 300000
+
+herobrine:
+  enabled: true
+  skin-owner-uuid: "f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"
+  haunt:
+    enabled: true
+    trigger-chance: 0.3
+  tracker:
+    enabled: true
+    trigger-chance: 0.25
+  sign:
+    enabled: true
+    trigger-chance: 0.2
+  bedside:
+    enabled: true
+    trigger-chance: 0.5
+
+ghost-mode:
+  enabled: true
+  duration-ms: 30000
+  sphere-radius: 2.0
+
+player-status:
+  enabled: true
+  panic:
+    threshold: 0.25
+    lock-ms: 15000
+  sweat:
+    health-threshold: 0.5
+  breath:
+    cold-temp-threshold: 0.15
+  hungry:
+    food-threshold: 10
+
+player-taunt:
+  enabled: true
+  cooldown-ms: 5000
+  nearest-max-distance: 30.0
+  targeted-max-distance: 100.0
+  max-custom-length: 80
+  max-custom-count: 10
+
+weird-villager:
+  enabled: true
+  check-interval-ms: 300000
+  trigger-chance: 0.2
+
+shadow-clone:
+  enabled: true
+  check-interval-ms: 300000
+  trigger-chance: 0.25
+
+friend:
+  enabled: true
+
+guess-number:
+  enabled: true
+  round-interval-ms: 300000
+  round-duration-ms: 180000
+  min-number: 1
+  max-number: 100
+  reward-grind: 100
+
+technoblade:
+  enabled: true
+  follow-search-radius: 50.0
+  follow-teleport-distance: 25.0
+
+execution:
+  enabled: true
+  auto-execute-on-kill: true
+
+wand:
+  enabled: true
+  max-flight-time-ms: 30000
+  require-op-for-unforgivable: false   # ★ 默认全玩家可用
+  max-active-projectiles: 3
+  lumos-light-level: 15
+  lumos-duration-ms: 10000
+
+wish-well:
+  enabled: true
+  cooldown-ms: 3000
+  reforge-cooldown-ms: 30000
+
+puppet:
+  enabled: true
+  protect-radius: 12.0
+  detect-radius: 3.0
+  follow-owner: true
+  follow-distance: 8.0
+  immunity-from-owner: true
+  tick-interval: 20
 ```
 
 ---
 
-## 可调参数
+## 玩法指南
 
-所有参数都在对应 Manager 类的顶部常量中，修改后需重新构建。
+### 🪄 魔杖系统
 
-### 调侃系统
+魔杖是插件最复杂的系统，包含：
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `GLOBAL_PLAYER_COOLDOWN_MS` | 3 秒 | 全局冷却 |
-| `COOLDOWN_BY_ACTION` | 5~60 秒 | 各行为独立冷却 |
-| `CHANCE_BY_ACTION` | 25%~100% | 各行为触发概率 |
+#### 属性系统
 
-### 幽灵系统
+每根魔杖随机生成 4 个属性：
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `STEAL_INTERVAL_MIN_MS` | 1 分钟 | 最短偷窃间隔 |
-| `STEAL_INTERVAL_MAX_MS` | 3 分钟 | 最长偷窃间隔 |
-| `RETURN_DELAY_MS` | 30 秒 | 归还延迟 |
-| `PLAYER_STEAL_COOLDOWN_MS` | 5 分钟 | 玩家冷却 |
+| 属性 | 取值范围 | 影响 |
+|------|---------|------|
+| **木材** | 15 种 | 亲和某一咒语分类，该类咒语伤害 ×1.3 |
+| **杖芯** | 8 种 | 亲和某一咒语分类，该类咒语速度/时长 ×1.15 |
+| **长度** | 8-16 英寸 | 影响投射物速度 |
+| **柔韧性** | 7 档 | 影响全局冷却与伤害 |
 
-### 生物吐槽
+#### 咒语列表
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `CHECK_INTERVAL_MS` | 20 秒 | 扫描间隔 |
-| `PLAYER_COOLDOWN_MS` | 2 分钟 | 玩家冷却 |
-| `TRIGGER_CHANCE` | 0.7 | 触发概率 |
-| `SCAN_RADIUS` | 16 格 | 检测半径 |
+**投射型**：除你武器、昏昏倒地、统统石化、火焰熊熊、爆炸咒、四分五裂、飞来咒、羽加迪姆勒维奥萨、倒挂金钟、咧嘴呼啦啦、无声无息、锁舌封喉、**阿瓦达索命**、**夺魂咒**、**钻心咒**
 
-### 血月
+**自身型**：盔甲护身、清水如泉、荧光闪烁
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `CHECK_INTERVAL_MS` | 1 分钟 | 检查间隔 |
-| `TRIGGER_CHANCE` | 0.15 | 触发概率 |
-| `DURATION_MS` | 5 分钟 | 持续时间 |
+**目标型**：阿拉霍洞开（开锁铁门）
 
-### Herobrine
+**范围型**：呼神护卫
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `HAUNT_TRIGGER_CHANCE` | 0.3 | 背后恐吓概率 |
-| `TRACKER_TRIGGER_CHANCE` | 0.25 | 追踪概率 |
-| `SIGN_TRIGGER_CHANCE` | 0.2 | 告示牌概率 |
-| `BEDSIDE_TRIGGER_CHANCE` | 0.5 | 床边概率 |
+**特殊**：护身咒、愈合如初、修复如初
 
-### 幽灵模式
+#### 不可饶恕咒
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `GHOST_DURATION_MS` | 30 秒 | 幽灵模式时长 |
-| `SPHERE_RADIUS` | 2.0 格 | 物品球体半径 |
+阿瓦达索命、夺魂咒、钻心咒属于**不可饶恕咒**：
 
-### 玩家状态效果
+- ✅ 默认所有玩家可用
+- ⚠️ **每使用 5 次，最大生命值永久 -2**
+- ⚠️ 最低降至 **3 颗心**
+- 💊 可通过**善行**（治疗他人 10 次）或**下界合金锭 + 许愿井**净化
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `PANIC_LOCK_MS` | 15 秒 | 惊恐锁定时间 |
-| `HEARTBEAT_INTERVAL_MS` | 1 秒 | 心跳间隔 |
-| `HURT_ANIMATION_INTERVAL_MS` | 1.5 秒 | 受伤动画间隔 |
+#### 亲和度系统
 
-### 玩家嘲讽
+- 魔杖未认主时，第一次使用会**绑定当前玩家**
+- 每次使用亲密度 +1%
+- 达到 100% 时，**其他人使用会触发爆炸反噬**
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `COOLDOWN_MS` | 5 秒 | 冷却 |
-| `NEAREST_MAX_DISTANCE` | 30 格 | 最近玩家检测距离 |
-| `TARGETED_MAX_DISTANCE` | 100 格 | 指定嘲讽距离 |
-| `MAX_CUSTOM_LENGTH` | 80 字符 | 自定义文案最大长度 |
-| `MAX_CUSTOM_COUNT` | 10 条 | 自定义文案数量上限 |
+### 🤖 私人傀儡
 
-### 好友系统
+1. 用 `/puppet <玩家名>` 获得一个带附魔光效的"XXX的傀儡"南瓜头
+2. 用南瓜头 + 2 雪块 / 4 铁块搭建傀儡
+3. 傀儡自动：
+   - 攻击主人附近的敌对生物
+   - 反击攻击主人的任何实体
+   - 跟随主人（可配置）
+   - 免疫主人伤害
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| 免费传送 | 无限距离 | 好友之间 |
-| 好友上限 | 无限制 | 可自行扩展 |
+### 🏆 成就系统
 
-### 猜数字
+50+ 成就，覆盖所有插件功能。包括：
 
-| 参数 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `ROUND_INTERVAL_MS` | 5 分钟 | 每局间隔 |
-| `ROUND_DURATION_MS` | 3 分钟 | 每局时长 |
-| `MIN_NUMBER` | 1 | 数字下限 |
-| `MAX_NUMBER` | 100 | 数字上限 |
-| `REWARD_GRIND` | 100 | 猜中奖励 |
+- 挖矿类（初次挖掘 → 肝帝之王）
+- 死亡类（初尝死亡 → 死士）
+- 魔杖类（初学魔法 → 霍格沃茨毕业生）
+- 不可饶恕咒类（**大难不死的孩子**、**人杖合一**）
+- 诡异事件类（Herobrine 相关）
+- 硬核类（万事通、传说玩家）
+
+---
+
+## 开发者 API
+
+### 事件
+
+所有事件定义在 `TauntEvents` 类：
+
+```java
+// 血月开始
+@EventHandler
+public void onBloodMoonStart(TauntEvents.BloodMoonStartEvent event) {
+    long duration = event.getDurationMs();
+}
+
+// 血月结束
+@EventHandler
+public void onBloodMoonEnd(TauntEvents.BloodMoonEndEvent event) { }
+
+// 玩家进入幽灵模式
+@EventHandler
+public void onGhostMode(TauntEvents.PlayerEnterGhostModeEvent event) {
+    Player player = event.getPlayer();
+}
+
+// 玩家被处决
+@EventHandler
+public void onExecuted(TauntEvents.PlayerExecutedEvent event) {
+    Player victim = event.getVictim();
+    CommandSender executor = event.getExecutor();
+}
+```
+
+### 工具类 `TauntUtils`
+
+```java
+// 成就挂钩
+TauntUtils.unlock(plugin, player, AchievementManager.Ach.FIRST_SPELL);
+TauntUtils.increment(plugin, player, "spells_cast", 1);
+TauntUtils.setCounter(plugin, player, "unique_spells", count);
+
+// 实体朝向
+TauntUtils.faceTo(entity, targetLocation);
+
+// 粒子安全发射
+TauntUtils.spawnParticleSafe(world, Particle.FLAME, x, y, z, 10, 0.1, 0.1, 0.1, 0.05);
+
+// 玩家检索
+Player found = TauntUtils.findPlayerByName("Steve");
+List<Player> nearby = TauntUtils.getNearbyPlayers(loc, 10.0, excludePlayer);
+
+// 安全击杀
+TauntUtils.killPlayer(plugin, victim);
+```
+
+### 主类 Getter
+
+```java
+TauntPlugin plugin = (TauntPlugin) Bukkit.getPluginManager().getPlugin("TauntPlugin");
+
+plugin.getWandManager();       // 魔杖系统
+plugin.getPuppetManager();     // 傀儡系统
+plugin.getFriendManager();     // 好友系统
+plugin.getAchievementManager();// 成就系统
+plugin.getGrindManager();      // 肝度系统
+plugin.getMessageManager();    // 消息系统
+// ... 等
+```
+
+### 消息系统
+
+`messages.yml` 支持：
+- `§` 颜色代码
+- `{key}` 字符串占位符
+- 消息池随机抽取
+- 热重载
+
+```java
+MessageManager messages = plugin.getMessageManager();
+
+// 发送单条消息
+messages.send(player, "friend.added", Map.of("{target}", "Steve"));
+
+// 随机消息池
+messages.random("taunt.pools.chat", Map.of("{player}", player.getName()));
+```
 
 ---
 
 ## 常见问题
 
-### Q1：玩家无法进入服务器怎么办？
+### Q: 魔杖右键没反应？
 
-**排查顺序**：
-
-1. 检查控制台是否有红色报错
-2. 临时移走 `TauntPlugin.jar`，看玩家能否进入
-3. 如果确认是插件问题，把完整报错发出来
-
-**常见原因**：
-
-- 插件 `onEnable` 异常
-- 数据文件损坏（删除 `grind.yml`、`custom_taunts.yml`、`friends.yml` 重新生成）
-- 与其他插件冲突
-
-### Q2：肝度数据丢失了怎么办？
-
-**原因**：可能是 `grind.yml` 写入中断
-
-**解决**：
-
-1. 停止服务器
-2. 检查 `plugins/TauntPlugin/grind.yml` 是否为空或损坏
-3. 如果是，重命名备份，让插件重新生成
-
-### Q3：生物吐槽没生效？
-
-**检查**：
-
-1. 确认 `TauntPlugin.java` 中注册了 `MobTauntManager`
-2. 确认玩家附近有 44 种支持生物中的一种
-3. 检查控制台是否有 `[生物调侃] 已加载 44 种生物`
-
-### Q4：Herobrine 皮肤显示不出来？
-
-**原因**：Mojang API 访问超时
-
-**解决**：
-
-1. 检查网络连接 `sessionserver.mojang.com`
-2. 换一个皮肤所有者 UUID
-3. 在 `HerobrineManager` 顶部配置静态的备用皮肤纹理
-
-### Q5：幽灵模式物品丢失？
-
-**原因**：服务器关闭时物品未掉落
-
-**解决**：
-
-1. `GhostModeManager.shutdown()` 会自动掉落物品
-2. 检查 `plugins/TauntPlugin/` 是否有异常日志
-
-### Q6：如何修改调侃文案？
-
-**方法 1**：直接改 `TauntManager` 里的 `MESSAGE_POOLS`
-
-**方法 2**：改 `MobTauntManager` 里的 `MOB_MESSAGES`
-
-**方法 3**：改 `PlayerTauntManager` 里的 `DEFAULT_TAUNT_MESSAGES`
-
-修改后需重新构建。
-
-### Q7：如何让服主不是 Justin_Yan？
-
-修改 `TauntManager.java` 顶部的：
+**A**: 检查 `config.yml` 中 `wand.enabled: true`。如果还是不行，在 `WandManager.onInteract` 第一行加调试日志：
 
 ```java
-private static final String OWNER_NAME = "你的名字";
+plugin.getLogger().info("[魔杖调试] 事件触发，" + player.getName());
 ```
 
-### Q8：如何调整惊恐效果？
+### Q: 中文客户端显示英文？
 
-修改 `PlayerStatusEffectManager.java`：
+**A**: `Component.translatable()` 依赖客户端语言包。如果服务端自定义渲染或客户端未加载语言文件，会显示 fallback 英文名。
 
-```java
-private static final double PANIC_DAMAGE_MULTIPLIER = 0.7;   // 攻击力倍率
-private static final double PANIC_KNOCKBACK_MULTIPLIER = 3.0; // 击退倍率
-private static final long PANIC_LOCK_MS = 15_000L;           // 锁定时间
+### Q: 不可饶恕咒的惩罚能撤销吗？
+
+**A**: 可以，三种方式：
+1. 用 `/wand` 施放**愈合如初**治疗其他玩家 10 次
+2. 用**下界合金锭**对许愿井右键
+3. 管理员手动移除 `AttributeModifier`（需要 OP 权限）
+
+### Q: 傀儡不攻击敌人？
+
+**A**: 检查：
+- `config.yml` 中 `puppet.enabled: true`
+- 傀儡与主人是否在同一世界
+- 敌人是否在 `protect-radius`（默认 12 格）范围内
+
+### Q: 修改配置后为什么不生效？
+
+**A**: 执行 `/taunt reload` 或重启服务器。部分开关类修改（如 `xxx.enabled`）需要完全重启。
+
+### Q: 如何完全禁用某个模块？
+
+**A**: 在 `config.yml` 里把对应模块的 `enabled` 改为 `false`，重启服务器。
+
+### Q: 数据存在哪里？
+
+**A**: 各模块数据保存在 `plugins/TauntPlugin/` 下：
+
 ```
-
-### Q9：好友传送到跨世界吗？
-
-**默认跨世界**。如果你想限制只能同世界传送，在 `FriendCommand` 的 `tp` 分支加：
-
-```java
-if (!player.getWorld().equals(target.getWorld())) {
-    player.sendMessage(Component.text("好友不在同一世界", NamedTextColor.RED));
-    return true;
-}
-```
-
-### Q10：血月触发太频繁/太稀罕？
-
-修改 `BloodMoonManager.java`：
-
-```java
-private static final double TRIGGER_CHANCE = 0.15;  // 改大更频繁
-private static final long DURATION_MS = 5 * 60_000L; // 持续时间
+plugins/TauntPlugin/
+├── config.yml              # 主配置
+├── messages.yml            # 消息配置
+├── achievements.yml        # 成就数据
+├── friends.yml             # 好友数据
+├── grind.yml               # 肝度数据
+├── custom_taunts.yml       # 自定义嘲讽
+├── ForcePack/              # ForcePack 资源包（如果使用）
+│   └── wand-rp.zip
+└── logs/                   # 日志
 ```
 
 ---
 
-## 📌 快捷索引
+## 构建
 
-| 想做什么 | 命令 |
-| :--- | :--- |
-| 查看肝度 | `/grind` |
-| 查看排行榜 | `/grind top` |
-| 查看周榜 | `/grind weekly` |
-| 嘲讽最近玩家 | `/taunt` |
-| 嘲讽指定玩家 | `/taunt <玩家名>` |
-| 设置自定义嘲讽 | `/taunt set <文案>` |
-| 查看自定义嘲讽 | `/taunt list` |
-| 添加好友 | `/friend add <玩家>` |
-| 查看好友 | `/friend list` |
-| 传送到好友 | `/friend tp <玩家>` |
-| 猜数字 | 聊天栏直接输入数字 |
+```bash
+git clone <repository>
+cd TauntPlugin
+mvn clean package
+```
+
+生成的 `TauntPlugin-x.x.x.jar` 位于 `target/`。
 
 ---
 
-**祝你玩得开心，注意别被 Herobrine 吓到 👁️**
+## 许可
+
+本项目采用 MIT 许可证。
+
+---
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request。
+
+**代码风格**：
+- Java 21 语法（`switch` 表达式、`record`、`instanceof` 模式匹配）
+- Paper API 优先于 Bukkit API
+- 所有公开 API 加 Javadoc
+- 每个 Manager 独立处理自己的事件和任务，通过 `TauntPlugin` 的 Getter 互相通信
+
+---
+
+## 致谢
+
+- 灵感来源：Technoblade、哈利波特系列、Minecraft 原版机制
+- 使用的 API：Paper、Adventure、Gson
+
+**Technoblade never dies.**
+- by Justin_Yan and Deepseek

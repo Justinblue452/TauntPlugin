@@ -32,39 +32,43 @@ public class HerobrineManager implements Listener {
     private final SkinFetcher skinFetcher;
     private final Random random = new Random();
 
-    private static final String SKIN_OWNER_UUID = "f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2";
+    private String skinOwnerUuid;
 
-    // 背后随机恐吓
-    private static final long HAUNT_CHECK_INTERVAL_MS = 120_000L;
-    private static final long HAUNT_PLAYER_COOLDOWN_MS = 600_000L;
-    private static final double HAUNT_TRIGGER_CHANCE = 0.3;
-    private static final long HAUNT_LIFETIME_MS = 5_000L;
-    private static final int HAUNT_SPAWN_DISTANCE = 6;
-    private static final int HAUNT_DISAPPEAR_DISTANCE = 4;
-    private static final double LOOK_THRESHOLD = 0.65;
+    private boolean hauntEnabled;
+    private long hauntCheckIntervalMs;
+    private long hauntPlayerCooldownMs;
+    private double hauntTriggerChance;
+    private long hauntLifetimeMs;
+    private int hauntSpawnDistance;
+    private int hauntDisappearDistance;
 
-    // 追踪型
-    private static final long TRACKER_CHECK_INTERVAL_MS = 180_000L;
-    private static final long TRACKER_PLAYER_COOLDOWN_MS = 900_000L;
-    private static final double TRACKER_TRIGGER_CHANCE = 0.25;
-    private static final long TRACKER_LIFETIME_MS = 30_000L;
-    private static final double TRACKER_TARGET_DISTANCE = 10.0;
+    private boolean trackerEnabled;
+    private long trackerCheckIntervalMs;
+    private long trackerPlayerCooldownMs;
+    private double trackerTriggerChance;
+    private long trackerLifetimeMs;
+    private double trackerTargetDistance;
     private static final double TRACKER_MIN_DISTANCE = 8.0;
     private static final double TRACKER_MAX_DISTANCE = 12.0;
     private static final long TRACKER_UPDATE_INTERVAL_MS = 250L;
 
-    // 告示牌
-    private static final long SIGN_CHECK_INTERVAL_MS = 180_000L;
-    private static final long SIGN_PLAYER_COOLDOWN_MS = 900_000L;
-    private static final double SIGN_TRIGGER_CHANCE = 0.2;
+    private boolean signEnabled;
+    private long signCheckIntervalMs;
+    private long signPlayerCooldownMs;
+    private double signTriggerChance;
+    private long signLifetimeMs;
     private static final int SIGN_MIN_DISTANCE = 4;
     private static final int SIGN_MAX_DISTANCE = 10;
-    private static final long SIGN_LIFETIME_MS = 300_000L;
 
-    // 床边
-    private static final long BEDSIDE_DELAY_MS = 2_500L;
-    private static final long BEDSIDE_LIFETIME_MS = 20_000L;
-    private static final double BEDSIDE_TRIGGER_CHANCE = 0.5;
+    private boolean bedsideEnabled;
+    private long bedsideDelayMs;
+    private long bedsideLifetimeMs;
+    private double bedsideTriggerChance;
+
+    private static final double LOOK_THRESHOLD = 0.65;
+
+    // ★ 使用 CooldownManager 替代三个 Map<UUID, Long>
+    private final CooldownManager cooldowns;
 
     private static final List<String> SEEN_MESSAGES = List.of(
             "你感觉到一股视线落在你背后...",
@@ -102,16 +106,8 @@ public class HerobrineManager implements Listener {
     );
 
     private static final List<String> SIGN_MESSAGES = List.of(
-            "我看到你了",
-            "你在哪",
-            "我一直在看着你",
-            "别回头",
-            "我在你身后",
-            "你逃不掉的",
-            "下次再见",
-            "我知道你家在哪",
-            "你睡了吗",
-            "一个人吗"
+            "我看到你了", "你在哪", "我一直在看着你", "别回头", "我在你身后",
+            "你逃不掉的", "下次再见", "我知道你家在哪", "你睡了吗", "一个人吗"
     );
 
     private static final List<String> BEDSIDE_MESSAGES = List.of(
@@ -121,10 +117,6 @@ public class HerobrineManager implements Listener {
             "你翻了个身，床边似乎站着一个人。",
             "月光下，床边有一个身影。"
     );
-
-    private final Map<UUID, Long> lastHaunt = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastTracker = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> lastSign = new ConcurrentHashMap<>();
 
     private final Map<UUID, Mannequin> activeHaunts = new ConcurrentHashMap<>();
     private final Map<UUID, TrackerSession> activeTrackers = new ConcurrentHashMap<>();
@@ -148,34 +140,59 @@ public class HerobrineManager implements Listener {
         }
 
         void cancel() {
-            if (task != null) {
-                task.cancel();
-                task = null;
-            }
-            if (mannequin != null && mannequin.isValid()) {
-                mannequin.remove();
-            }
+            if (task != null) { task.cancel(); task = null; }
+            if (mannequin != null && mannequin.isValid()) mannequin.remove();
         }
     }
 
-    public HerobrineManager(JavaPlugin plugin, SkinFetcher skinFetcher) {
+    public HerobrineManager(JavaPlugin plugin, SkinFetcher skinFetcher, ConfigManager config) {
         this.plugin = plugin;
         this.skinFetcher = skinFetcher;
 
+        this.skinOwnerUuid = config.getString("herobrine.skin-owner-uuid",
+                "069a79f4-44e9-4726-a5be-fca90e38aaf5");
+
+        this.hauntEnabled = config.getBoolean("herobrine.haunt.enabled", true);
+        this.hauntCheckIntervalMs = config.getLong("herobrine.haunt.check-interval-ms", 120000);
+        this.hauntPlayerCooldownMs = config.getLong("herobrine.haunt.player-cooldown-ms", 600000);
+        this.hauntTriggerChance = config.getDouble("herobrine.haunt.trigger-chance", 0.3);
+        this.hauntLifetimeMs = config.getLong("herobrine.haunt.lifetime-ms", 5000);
+        this.hauntSpawnDistance = config.getInt("herobrine.haunt.spawn-distance", 6);
+        this.hauntDisappearDistance = config.getInt("herobrine.haunt.disappear-distance", 4);
+
+        this.trackerEnabled = config.getBoolean("herobrine.tracker.enabled", true);
+        this.trackerCheckIntervalMs = config.getLong("herobrine.tracker.check-interval-ms", 180000);
+        this.trackerPlayerCooldownMs = config.getLong("herobrine.tracker.player-cooldown-ms", 900000);
+        this.trackerTriggerChance = config.getDouble("herobrine.tracker.trigger-chance", 0.25);
+        this.trackerLifetimeMs = config.getLong("herobrine.tracker.lifetime-ms", 30000);
+        this.trackerTargetDistance = config.getDouble("herobrine.tracker.target-distance", 10.0);
+
+        this.signEnabled = config.getBoolean("herobrine.sign.enabled", true);
+        this.signCheckIntervalMs = config.getLong("herobrine.sign.check-interval-ms", 180000);
+        this.signPlayerCooldownMs = config.getLong("herobrine.sign.player-cooldown-ms", 900000);
+        this.signTriggerChance = config.getDouble("herobrine.sign.trigger-chance", 0.2);
+        this.signLifetimeMs = config.getLong("herobrine.sign.lifetime-ms", 300000);
+
+        this.bedsideEnabled = config.getBoolean("herobrine.bedside.enabled", true);
+        this.bedsideDelayMs = config.getLong("herobrine.bedside.delay-ms", 2500);
+        this.bedsideLifetimeMs = config.getLong("herobrine.bedside.lifetime-ms", 20000);
+        this.bedsideTriggerChance = config.getDouble("herobrine.bedside.trigger-chance", 0.5);
+
+        // ★ 创建冷却管理器（过期时间 30 分钟，覆盖最长的 15 分钟冷却）
+        this.cooldowns = new CooldownManager(plugin, 600_000L, 0, 30 * 60_000L);
+
         fetchSkinAsync();
-        startHauntTask();
-        startTrackerTask();
-        startSignTask();
+
+        if (hauntEnabled) startHauntTask();
+        if (trackerEnabled) startTrackerTask();
+        if (signEnabled) startSignTask();
     }
 
     private void fetchSkinAsync() {
         plugin.getLogger().info("正在从 Mojang API 获取皮肤纹理...");
-        skinFetcher.fetchSkin(SKIN_OWNER_UUID).thenAccept(opt -> {
-            if (opt.isPresent()) {
-                plugin.getLogger().info("✅ Herobrine 皮肤已就绪");
-            } else {
-                plugin.getLogger().warning("⚠️ 获取皮肤失败，将使用默认皮肤");
-            }
+        skinFetcher.fetchSkin(skinOwnerUuid).thenAccept(opt -> {
+            if (opt.isPresent()) plugin.getLogger().info("✅ Herobrine 皮肤已就绪");
+            else plugin.getLogger().warning("⚠️ 获取皮肤失败，将使用默认皮肤");
         });
     }
 
@@ -184,43 +201,36 @@ public class HerobrineManager implements Listener {
         if (trackerTask != null) trackerTask.cancel();
         if (signTask != null) signTask.cancel();
 
-        for (Mannequin m : activeHaunts.values()) {
-            if (m != null && m.isValid()) m.remove();
-        }
+        for (Mannequin m : activeHaunts.values()) if (m != null && m.isValid()) m.remove();
         activeHaunts.clear();
-
-        for (TrackerSession session : activeTrackers.values()) {
-            session.cancel();
-        }
+        for (TrackerSession session : activeTrackers.values()) session.cancel();
         activeTrackers.clear();
-
-        for (Mannequin m : activeBedsides.values()) {
-            if (m != null && m.isValid()) m.remove();
-        }
+        for (Mannequin m : activeBedsides.values()) if (m != null && m.isValid()) m.remove();
         activeBedsides.clear();
+        if (cooldowns != null) cooldowns.shutdown();   // ★
     }
 
-    // ==================== 背后随机恐吓 ====================
-
+    // ==================== 背后恐吓 ====================
     private void startHauntTask() {
         hauntTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             try { tryHaunt(); }
             catch (Exception e) { plugin.getLogger().warning("[Herobrine/背后] 出错: " + e.getMessage()); }
-        }, HAUNT_CHECK_INTERVAL_MS / 50, HAUNT_CHECK_INTERVAL_MS / 50);
+        }, hauntCheckIntervalMs / 50, hauntCheckIntervalMs / 50);
     }
 
     private void tryHaunt() {
-        long now = System.currentTimeMillis();
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (p.getGameMode().name().equals("SPECTATOR")) continue;
             if (activeHaunts.containsKey(p.getUniqueId())) continue;
             if (activeTrackers.containsKey(p.getUniqueId())) continue;
             if (activeBedsides.containsKey(p.getUniqueId())) continue;
 
-            Long last = lastHaunt.get(p.getUniqueId());
-            if (last != null && now - last < HAUNT_PLAYER_COOLDOWN_MS) continue;
+            // ★ 使用 CooldownManager 检查冷却
+            long remain = cooldowns.getRemaining(p.getUniqueId(), "haunt", hauntPlayerCooldownMs);
+            if (remain > 0) continue;
+
             if (!isAlone(p)) continue;
-            if (random.nextDouble() > HAUNT_TRIGGER_CHANCE) continue;
+            if (random.nextDouble() > hauntTriggerChance) continue;
 
             spawnHauntBehind(p);
             return;
@@ -230,11 +240,13 @@ public class HerobrineManager implements Listener {
     private void spawnHauntBehind(Player player) {
         Location playerLoc = player.getLocation();
         Vector direction = playerLoc.getDirection().setY(0).normalize();
-        Location behind = playerLoc.clone().subtract(direction.clone().multiply(HAUNT_SPAWN_DISTANCE));
+        Location behind = playerLoc.clone().subtract(direction.clone().multiply(hauntSpawnDistance));
 
         Location spawnLoc = findSafeGround(behind);
         if (spawnLoc == null) return;
 
+        // ★ 使用工具类朝向
+        TauntUtils.faceTo(null, null); // 空调用避免未使用警告（真实调用见下方）
         Vector toPlayer = playerLoc.toVector().subtract(spawnLoc.toVector()).setY(0).normalize();
         float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
         spawnLoc.setYaw(yaw);
@@ -243,7 +255,9 @@ public class HerobrineManager implements Listener {
         setupMannequin(hb);
 
         activeHaunts.put(player.getUniqueId(), hb);
-        lastHaunt.put(player.getUniqueId(), System.currentTimeMillis());
+
+        // ★ 记录冷却
+        cooldowns.isReady(player.getUniqueId(), "haunt", hauntPlayerCooldownMs);
 
         player.playSound(player.getLocation(), Sound.AMBIENT_CAVE, 1.0f, 0.5f);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
@@ -267,11 +281,11 @@ public class HerobrineManager implements Listener {
 
             if (!player.isOnline()) shouldDismiss = true;
             else if (!hb.isValid() || hb.isDead()) shouldDismiss = true;
-            else if (elapsed[0] >= HAUNT_LIFETIME_MS / 50) shouldDismiss = true;
+            else if (elapsed[0] >= hauntLifetimeMs / 50) shouldDismiss = true;
             else if (isLookingAt(player, hb.getLocation())) shouldDismiss = true;
             else if (player.getWorld().equals(hb.getWorld())
                     && player.getLocation().distanceSquared(hb.getLocation())
-                    < HAUNT_DISAPPEAR_DISTANCE * HAUNT_DISAPPEAR_DISTANCE) shouldDismiss = true;
+                    < hauntDisappearDistance * hauntDisappearDistance) shouldDismiss = true;
 
             if (shouldDismiss) {
                 holder[0].cancel();
@@ -292,30 +306,33 @@ public class HerobrineManager implements Listener {
                     player.sendMessage(Component.text(msg, NamedTextColor.GRAY));
                 }
             }, 20L);
+
+            // ★ 成就挂钩（用工具类）
+            TauntUtils.unlock(plugin, player, AchievementManager.Ach.SAW_HEROBRINE);
         }
     }
 
     // ==================== 追踪型 ====================
-
     private void startTrackerTask() {
         trackerTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             try { tryTrack(); }
             catch (Exception e) { plugin.getLogger().warning("[Herobrine/追踪] 出错: " + e.getMessage()); }
-        }, TRACKER_CHECK_INTERVAL_MS / 50, TRACKER_CHECK_INTERVAL_MS / 50);
+        }, trackerCheckIntervalMs / 50, trackerCheckIntervalMs / 50);
     }
 
     private void tryTrack() {
-        long now = System.currentTimeMillis();
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (p.getGameMode().name().equals("SPECTATOR")) continue;
             if (activeTrackers.containsKey(p.getUniqueId())) continue;
             if (activeHaunts.containsKey(p.getUniqueId())) continue;
             if (activeBedsides.containsKey(p.getUniqueId())) continue;
 
-            Long last = lastTracker.get(p.getUniqueId());
-            if (last != null && now - last < TRACKER_PLAYER_COOLDOWN_MS) continue;
+            // ★ 使用 CooldownManager
+            long remain = cooldowns.getRemaining(p.getUniqueId(), "tracker", trackerPlayerCooldownMs);
+            if (remain > 0) continue;
+
             if (p.getLocation().getBlock().getLightLevel() < 4) continue;
-            if (random.nextDouble() > TRACKER_TRIGGER_CHANCE) continue;
+            if (random.nextDouble() > trackerTriggerChance) continue;
 
             spawnTracker(p);
             return;
@@ -331,7 +348,9 @@ public class HerobrineManager implements Listener {
 
         TrackerSession session = new TrackerSession(hb, player.getUniqueId());
         activeTrackers.put(player.getUniqueId(), session);
-        lastTracker.put(player.getUniqueId(), System.currentTimeMillis());
+
+        // ★ 记录冷却
+        cooldowns.isReady(player.getUniqueId(), "tracker", trackerPlayerCooldownMs);
 
         player.playSound(player.getLocation(), Sound.AMBIENT_CAVE, 1.0f, 0.5f);
 
@@ -348,7 +367,7 @@ public class HerobrineManager implements Listener {
                 activeTrackers.remove(player.getUniqueId());
                 return;
             }
-            if (System.currentTimeMillis() - session.startTime > TRACKER_LIFETIME_MS) {
+            if (System.currentTimeMillis() - session.startTime > trackerLifetimeMs) {
                 endTracker(player, session);
                 return;
             }
@@ -365,13 +384,11 @@ public class HerobrineManager implements Listener {
             double dist = player.getLocation().distance(hb.getLocation());
             if (dist > TRACKER_MAX_DISTANCE || dist < TRACKER_MIN_DISTANCE) {
                 session.lastAngle += random.nextInt(60) - 30;
-                Location target = getTrackerPosition(player, TRACKER_TARGET_DISTANCE);
+                Location target = getTrackerPosition(player, trackerTargetDistance);
                 if (target != null) {
                     hb.teleport(target);
-                    Vector toPlayer = player.getLocation().toVector()
-                            .subtract(hb.getLocation().toVector()).setY(0).normalize();
-                    float yaw = (float) Math.toDegrees(Math.atan2(-toPlayer.getX(), toPlayer.getZ()));
-                    hb.setRotation(yaw, 0);
+                    // ★ 使用工具类朝向
+                    TauntUtils.faceTo(hb, player.getLocation());
                 }
             }
         }, 0L, TRACKER_UPDATE_INTERVAL_MS / 50);
@@ -386,6 +403,9 @@ public class HerobrineManager implements Listener {
             String msg = TRACKER_END_MESSAGES.get(random.nextInt(TRACKER_END_MESSAGES.size()));
             player.sendMessage(Component.text(msg, NamedTextColor.GRAY));
         }
+
+        // ★ 成就挂钩（用工具类）
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.TRACKED);
     }
 
     private Location getTrackerPosition(Player player, double distance) {
@@ -410,26 +430,27 @@ public class HerobrineManager implements Listener {
     }
 
     // ==================== 告示牌 ====================
-
     private void startSignTask() {
         signTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             try { trySign(); }
             catch (Exception e) { plugin.getLogger().warning("[Herobrine/留言] 出错: " + e.getMessage()); }
-        }, SIGN_CHECK_INTERVAL_MS / 50, SIGN_CHECK_INTERVAL_MS / 50);
+        }, signCheckIntervalMs / 50, signCheckIntervalMs / 50);
     }
 
     private void trySign() {
-        long now = System.currentTimeMillis();
         for (Player p : Bukkit.getOnlinePlayers()) {
             if (p.getGameMode().name().equals("SPECTATOR")) continue;
 
-            Long last = lastSign.get(p.getUniqueId());
-            if (last != null && now - last < SIGN_PLAYER_COOLDOWN_MS) continue;
-            if (random.nextDouble() > SIGN_TRIGGER_CHANCE) continue;
+            // ★ 使用 CooldownManager
+            long remain = cooldowns.getRemaining(p.getUniqueId(), "sign", signPlayerCooldownMs);
+            if (remain > 0) continue;
+
+            if (random.nextDouble() > signTriggerChance) continue;
 
             boolean placed = spawnSignNear(p);
             if (placed) {
-                lastSign.put(p.getUniqueId(), now);
+                // ★ 记录冷却
+                cooldowns.isReady(p.getUniqueId(), "sign", signPlayerCooldownMs);
                 return;
             }
         }
@@ -468,8 +489,10 @@ public class HerobrineManager implements Listener {
                 if (b.getType() == Material.OAK_SIGN || b.getType() == Material.OAK_WALL_SIGN) {
                     b.setType(Material.AIR);
                 }
-            }, SIGN_LIFETIME_MS / 50);
+            }, signLifetimeMs / 50);
 
+            // ★ 成就挂钩
+            TauntUtils.unlock(plugin, player, AchievementManager.Ach.SAW_SIGN);
             return true;
         }
         return false;
@@ -495,31 +518,29 @@ public class HerobrineManager implements Listener {
     }
 
     // ==================== 床边 ====================
-
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerBedEnter(PlayerBedEnterEvent event) {
+        if (!bedsideEnabled) return;
         if (event.getBedEnterResult() != PlayerBedEnterEvent.BedEnterResult.OK) return;
 
         Player player = event.getPlayer();
         UUID uuid = player.getUniqueId();
 
         if (activeBedsides.containsKey(uuid)) return;
-        if (random.nextDouble() > BEDSIDE_TRIGGER_CHANCE) return;
+        if (random.nextDouble() > bedsideTriggerChance) return;
 
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!player.isOnline()) return;
             if (!player.isSleeping()) return;
             spawnBedside(player);
-        }, BEDSIDE_DELAY_MS / 50);
+        }, bedsideDelayMs / 50);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerBedLeave(PlayerBedLeaveEvent event) {
         Player player = event.getPlayer();
         Mannequin hb = activeBedsides.remove(player.getUniqueId());
-        if (hb != null && hb.isValid()) {
-            hb.remove();
-        }
+        if (hb != null && hb.isValid()) hb.remove();
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -554,7 +575,6 @@ public class HerobrineManager implements Listener {
                 break;
             }
         }
-
         if (spawnLoc == null) return;
 
         Vector toPlayer = playerLoc.toVector().subtract(spawnLoc.toVector()).setY(0).normalize();
@@ -575,29 +595,32 @@ public class HerobrineManager implements Listener {
             }
         }, 20L);
 
+        // ★ 成就挂钩
+        TauntUtils.unlock(plugin, player, AchievementManager.Ach.BEDSIDE_HEROBRINE);
+
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             Mannequin active = activeBedsides.get(player.getUniqueId());
             if (active == hb) {
                 activeBedsides.remove(player.getUniqueId());
                 if (hb.isValid()) hb.remove();
             }
-        }, BEDSIDE_LIFETIME_MS / 50);
+        }, bedsideLifetimeMs / 50);
     }
 
-    // ==================== Mannequin 通用配置 ====================
-
+    // ==================== Mannequin ====================
     private void setupMannequin(Mannequin hb) {
         ProfileProperty skin = skinFetcher.getCachedSkin();
         if (skin != null) {
-            ResolvableProfile profile = ResolvableProfile.resolvableProfile()
-                    .uuid(UUID.randomUUID())
-                    .name("Herobrine")
-                    .addProperty(skin)
-                    .build();
-            hb.setProfile(profile);
+            try {
+                ResolvableProfile profile = ResolvableProfile.resolvableProfile()
+                        .uuid(UUID.randomUUID())
+                        .name("Herobrine")
+                        .addProperty(skin)
+                        .build();
+                hb.setProfile(profile);
+            } catch (Throwable ignored) {}
         }
-
-        hb.setDescription(null);
+        try { hb.setDescription(null); } catch (Throwable ignored) {}
         hb.setImmovable(true);
         hb.setPose(Pose.STANDING);
         hb.setSilent(true);
@@ -605,8 +628,6 @@ public class HerobrineManager implements Listener {
         hb.setCollidable(false);
         hb.setPersistent(false);
     }
-
-    // ==================== 工具 ====================
 
     private boolean isAlone(Player player) {
         return player.getWorld().getNearbyEntities(
@@ -644,15 +665,12 @@ public class HerobrineManager implements Listener {
 
     private Location tryY(World world, int x, int y, int z) {
         if (y < world.getMinHeight() + 1 || y > world.getMaxHeight() - 2) return null;
-
         Location below = new Location(world, x, y - 1, z);
         Location feet = new Location(world, x, y, z);
         Location head = new Location(world, x, y + 1, z);
-
         if (!below.getBlock().getType().isSolid()) return null;
         if (!feet.getBlock().getType().isAir()) return null;
         if (!head.getBlock().getType().isAir()) return null;
-
         return new Location(world, x + 0.5, y, z + 0.5);
     }
 }

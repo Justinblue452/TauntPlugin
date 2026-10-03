@@ -11,9 +11,13 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.block.Block;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Firework;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.FireworkMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -23,17 +27,28 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
-public class TauntManager {
+public class TauntManager implements Listener {   // ★ 实现 Listener
 
     private final JavaPlugin plugin;
+    private final ConfigManager config;
 
-    // ==================== 服主 ID ====================
-    private static final String OWNER_NAME = "Justin_Yan";
+    private String ownerName;
+    private long globalPlayerCooldownMs;
+    private final Map<String, Long> cooldownByAction = new HashMap<>();
+    private final Map<String, Double> chanceByAction = new HashMap<>();
 
-    // ==================== ★ 血月状态（由 BloodMoonManager 控制）★ ====================
-    public static volatile boolean bloodMoonActive = false;
+    // ★ 血月状态改为私有字段（不再是 public static）
+    private volatile boolean bloodMoonActive = false;
 
-    // ==================== 服主专属消息池 ====================
+    // ==================== 静态前缀 ====================
+    private static final Component PREFIX = Component.text("[服务器] ", NamedTextColor.GOLD);
+    private static final Component OWNER_PREFIX = Component.text("[服主公告] ", NamedTextColor.GOLD);
+    private static final Component OWNER_DEATH_PREFIX = Component.text("[服主讣告] ", NamedTextColor.DARK_RED);
+    private static final Component APOLOGY_PREFIX = Component.text("[服务器] ", NamedTextColor.RED);
+
+    // ==================== 静态消息池 ====================
+    private static final Map<String, List<String>> MESSAGE_POOLS = buildMessagePools();
+
     private static final List<String> OWNER_WELCOME_MESSAGES = List.of(
             "⭐ 恭迎服主 %player% 大人降临服务器！全体起立！",
             "👑 服主 %player% 上线了，服务器蓬荜生辉！",
@@ -47,11 +62,6 @@ public class TauntManager {
             "⚜️ 是 %player% 大人！全体肃静，聆听圣谕！"
     );
 
-    private static final String OWNER_TITLE = "服主驾到";
-    private static final String OWNER_SUBTITLE = "Justin_Yan 上线了";
-    private static final String OWNER_DEATH_TITLE = "服主陨落";
-    private static final String OWNER_DEATH_SUBTITLE = "全体默哀三秒";
-
     private static final List<String> OWNER_DEATH_MESSAGES = List.of(
             "💀 服主 %player% 竟然死了！全体默哀！",
             "⚰️ 天哪，服主 %player% 倒下了！服务器都在颤抖。",
@@ -63,7 +73,6 @@ public class TauntManager {
             "🔥 服主 %player% 被 %context% 灭了，快来人报仇！"
     );
 
-    // ==================== 道歉消息池 ====================
     private static final List<String> APOLOGY_MESSAGES = List.of(
             "等等……%player% 是服主？！对不起对不起，我刚才什么都没说！",
             "哎呀，不小心调侃了服主 %player%，我错了，请原谅我！",
@@ -82,7 +91,6 @@ public class TauntManager {
             "系统提示：刚刚的调侃是临时工发的，与本人无关，%player% 服主明鉴！"
     );
 
-    // ==================== ★ 血月专属死亡文案 ★ ====================
     private static final List<String> BLOOD_MOON_DEATH_MESSAGES = List.of(
             "💀 %player% 在血月的注视下死在了 %context% 手里，鲜血染红了月光……",
             "🌑 血月之下，%player% 被 %context% 撕碎，连惨叫都被夜色吞没。",
@@ -97,58 +105,238 @@ public class TauntManager {
     );
 
     private static final long APOLOGY_DELAY_MS = 1_500L;
+    private static final long CLEANUP_INTERVAL_MS = 60_000;
+    private static final long ENTRY_EXPIRE_MS = 5 * 60_000;
 
-    // ==================== 静态缓存 ====================
-    private static final Component PREFIX = Component.text("[服务器] ", NamedTextColor.GOLD);
-    private static final Component OWNER_PREFIX = Component.text("[服主公告] ", NamedTextColor.GOLD);
-    private static final Component OWNER_DEATH_PREFIX = Component.text("[服主讣告] ", NamedTextColor.DARK_RED);
-    private static final Component APOLOGY_PREFIX = Component.text("[服务器] ", NamedTextColor.RED);
-    private static final Map<String, List<String>> MESSAGE_POOLS = buildMessagePools();
+    private final Map<UUID, PlayerCooldown> cooldowns = new ConcurrentHashMap<>();
 
-    // ==================== 冷却配置 ====================
-    private static final Map<String, Long> COOLDOWN_BY_ACTION;
-    static {
-        Map<String, Long> map = new HashMap<>();
-        map.put("move", 60_000L);
-        map.put("sneak", 45_000L);
-        map.put("chat", 25_000L);
-        map.put("interact", 25_000L);
-        map.put("break", 20_000L);
-        map.put("place", 20_000L);
-        map.put("attack", 20_000L);
-        map.put("eat", 30_000L);
-        map.put("fish", 30_000L);
-        map.put("teleport", 20_000L);
-        map.put("fall", 15_000L);
-        map.put("death", 5_000L);
-        map.put("join", 3_000L);
-        map.put("quit", 3_000L);
-        map.put("levelup", 3_000L);
-        COOLDOWN_BY_ACTION = Collections.unmodifiableMap(map);
+    private static class PlayerCooldown {
+        final Map<String, Long> actions = new ConcurrentHashMap<>();
+        volatile long lastActive = System.currentTimeMillis();
+        volatile long lastGlobalTaunt = 0L;
     }
 
-    private static final Map<String, Double> CHANCE_BY_ACTION;
-    static {
-        Map<String, Double> map = new HashMap<>();
-        map.put("move", 0.25);
-        map.put("sneak", 0.25);
-        map.put("chat", 0.35);
-        map.put("interact", 0.25);
-        map.put("break", 0.4);
-        map.put("place", 0.4);
-        map.put("attack", 0.35);
-        map.put("eat", 0.4);
-        map.put("fish", 0.5);
-        map.put("teleport", 0.3);
-        map.put("fall", 0.6);
-        map.put("death", 1.0);
-        map.put("join", 1.0);
-        map.put("quit", 1.0);
-        map.put("levelup", 1.0);
-        CHANCE_BY_ACTION = Collections.unmodifiableMap(map);
+    // ==================== 构造函数 ====================
+
+    public TauntManager(JavaPlugin plugin, ConfigManager config) {
+        this.plugin = plugin;
+        this.config = config;
+        loadConfig();
+
+        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::cleanup,
+                CLEANUP_INTERVAL_MS / 50, CLEANUP_INTERVAL_MS / 50);
     }
 
-    private static final long GLOBAL_PLAYER_COOLDOWN_MS = 3_000L;
+    private void loadConfig() {
+        ownerName = config.getString("general.owner-name", "Justin_Yan");
+        globalPlayerCooldownMs = config.getLong("taunt.global-cooldown-ms", 3000);
+
+        cooldownByAction.clear();
+        chanceByAction.clear();
+
+        ConfigurationSection actions = config.getSection("taunt.actions");
+        if (actions != null) {
+            for (String key : actions.getKeys(false)) {
+                ConfigurationSection s = actions.getConfigurationSection(key);
+                if (s == null) continue;
+                cooldownByAction.put(key, s.getLong("cooldown", 15000));
+                chanceByAction.put(key, s.getDouble("chance", 1.0));
+            }
+        }
+    }
+
+    // ==================== ★ 血月事件监听 ====================
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBloodMoonStart(TauntEvents.BloodMoonStartEvent event) {
+        this.bloodMoonActive = true;
+        plugin.getLogger().info("[调侃] 收到血月开始事件，死亡文案已切换");
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onBloodMoonEnd(TauntEvents.BloodMoonEndEvent event) {
+        this.bloodMoonActive = false;
+        plugin.getLogger().info("[调侃] 收到血月结束事件，死亡文案已恢复");
+    }
+
+    /** ★ 公开方法，供其他模块查询血月状态 */
+    public boolean isBloodMoonActive() {
+        return bloodMoonActive;
+    }
+
+    // ==================== 清理任务 ====================
+
+    private void cleanup() {
+        long now = System.currentTimeMillis();
+        cooldowns.entrySet().removeIf(entry ->
+                now - entry.getValue().lastActive > ENTRY_EXPIRE_MS);
+    }
+
+    // ==================== 主入口 ====================
+
+    public void taunt(Player player, String action, String context) {
+        taunt(player, action, context != null ? Component.text(context) : null);
+    }
+
+    public void taunt(Player player, String action, Component context) {
+        long now = System.currentTimeMillis();
+
+        PlayerCooldown state = cooldowns.computeIfAbsent(player.getUniqueId(), k -> new PlayerCooldown());
+        state.lastActive = now;
+
+        if (now - state.lastGlobalTaunt < globalPlayerCooldownMs) return;
+
+        long cooldown = cooldownByAction.getOrDefault(action, 15_000L);
+        Long last = state.actions.get(action);
+        if (last != null && now - last < cooldown) return;
+
+        double chance = chanceByAction.getOrDefault(action, 1.0);
+        if (chance < 1.0 && ThreadLocalRandom.current().nextDouble() > chance) return;
+
+        List<String> pool;
+        // ★ 使用实例字段血月状态
+        if ("death".equals(action) && bloodMoonActive) {
+            pool = BLOOD_MOON_DEATH_MESSAGES;
+        } else {
+            pool = MESSAGE_POOLS.get(action);
+        }
+        if (pool == null || pool.isEmpty()) return;
+
+        state.lastGlobalTaunt = now;
+        state.actions.put(action, now);
+
+        String template = pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+        Component playerName = Component.text(player.getName(), NamedTextColor.AQUA);
+        Component ctx = context != null ? context : Component.empty();
+
+        Component message = Component.text(template, NamedTextColor.YELLOW)
+                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(playerName))
+                .replaceText(cfg -> cfg.matchLiteral("%context%").replacement(ctx));
+
+        Bukkit.getServer().broadcast(PREFIX.append(message));
+
+        if (isOwner(player)) {
+            scheduleApology(player);
+        }
+    }
+
+    // ==================== 服主功能 ====================
+
+    public boolean isOwner(Player player) {
+        return player != null && ownerName.equalsIgnoreCase(player.getName());
+    }
+
+    public void welcomeOwner(Player owner) {
+        if (owner == null || !owner.isOnline()) return;
+
+        String template = OWNER_WELCOME_MESSAGES.get(
+                ThreadLocalRandom.current().nextInt(OWNER_WELCOME_MESSAGES.size()));
+        Component ownerNameComp = Component.text(owner.getName(), NamedTextColor.GOLD);
+        Component message = Component.text(template, NamedTextColor.YELLOW)
+                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerNameComp));
+        Bukkit.getServer().broadcast(OWNER_PREFIX.append(message));
+
+        Title.Times times = Title.Times.times(
+                Duration.ofMillis(500), Duration.ofMillis(2500), Duration.ofMillis(500));
+        Title title = Title.title(
+                Component.text("服主驾到", NamedTextColor.GOLD),
+                Component.text("Justin_Yan 上线了", NamedTextColor.YELLOW),
+                times);
+
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.showTitle(title);
+            p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.2f);
+        }
+
+        owner.playSound(owner.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
+
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (owner.isOnline()) spawnOwnerFireworks(owner);
+        }, 20L);
+    }
+
+    private void spawnOwnerFireworks(Player owner) {
+        double[][] offsets = {{0, 0, 0}, {2, 1, 0}, {-2, 1, 1}};
+        for (double[] offset : offsets) {
+            owner.getWorld().spawn(
+                    owner.getLocation().clone().add(offset[0], offset[1], offset[2]),
+                    Firework.class,
+                    fw -> {
+                        FireworkMeta meta = fw.getFireworkMeta();
+                        meta.addEffect(FireworkEffect.builder()
+                                .withColor(Color.YELLOW, Color.ORANGE)
+                                .withFade(Color.RED)
+                                .with(FireworkEffect.Type.BALL_LARGE)
+                                .trail(true).flicker(true).build());
+                        meta.setPower(1);
+                        fw.setFireworkMeta(meta);
+                    });
+        }
+        owner.getWorld().spawnParticle(Particle.FLAME,
+                owner.getLocation().add(0, 2, 0), 60, 1.5, 1.5, 1.5, 0.02);
+    }
+
+    public void ownerDeath(Player owner, Component cause) {
+        if (owner == null) return;
+        String template = OWNER_DEATH_MESSAGES.get(
+                ThreadLocalRandom.current().nextInt(OWNER_DEATH_MESSAGES.size()));
+        Component ownerNameComp = Component.text(owner.getName(), NamedTextColor.GOLD);
+        Component ctx = cause != null ? cause : Component.text("未知原因");
+
+        Component message = Component.text(template, NamedTextColor.RED)
+                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerNameComp))
+                .replaceText(cfg -> cfg.matchLiteral("%context%").replacement(ctx));
+        Bukkit.getServer().broadcast(OWNER_DEATH_PREFIX.append(message));
+
+        Title.Times times = Title.Times.times(
+                Duration.ofMillis(500), Duration.ofMillis(2500), Duration.ofMillis(500));
+        Title title = Title.title(
+                Component.text("服主陨落", NamedTextColor.DARK_RED),
+                Component.text("全体默哀三秒", NamedTextColor.RED),
+                times);
+
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.showTitle(title);
+            p.playSound(p.getLocation(), Sound.ENTITY_WITHER_SPAWN, 0.6f, 0.5f);
+        }
+    }
+
+    private void scheduleApology(Player owner) {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!owner.isOnline()) return;
+            String template = APOLOGY_MESSAGES.get(
+                    ThreadLocalRandom.current().nextInt(APOLOGY_MESSAGES.size()));
+            Component ownerNameComp = Component.text(owner.getName(), NamedTextColor.GOLD);
+            Component apologyMsg = Component.text(template, NamedTextColor.RED)
+                    .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerNameComp));
+            Bukkit.getServer().broadcast(APOLOGY_PREFIX.append(apologyMsg));
+        }, APOLOGY_DELAY_MS / 50);
+    }
+
+    // ==================== 翻译工具（static 保持）====================
+
+    public static Component blockName(Block block) {
+        return blockName(block.getType());
+    }
+
+    public static Component blockName(Material material) {
+        NamespacedKey key = material.getKey();
+        return Component.translatable("block." + key.getNamespace() + "." + key.getKey());
+    }
+
+    public static Component entityName(Entity entity) {
+        Component custom = entity.customName();
+        if (custom != null) return custom;
+        NamespacedKey key = entity.getType().getKey();
+        return Component.translatable("entity." + key.getNamespace() + "." + key.getKey());
+    }
+
+    public static Component itemName(ItemStack stack) {
+        NamespacedKey key = stack.getType().getKey();
+        return Component.translatable("item." + key.getNamespace() + "." + key.getKey());
+    }
+
+    // ==================== 消息池构建（保持 static）====================
 
     private static Map<String, List<String>> buildMessagePools() {
         Map<String, List<String>> pools = new HashMap<>();
@@ -205,7 +393,7 @@ public class TauntManager {
                 "%player% 的审美，从 %context% 的摆法就能看出来。",
                 "%player% 开始搞建设了，请大家远离施工现场。",
                 "这个 %context% 的位置，堪称艺术品（反话）。",
-                "%player% 又开始了他的“伟大工程”。",
+                "%player% 又开始了他的\"伟大工程\"。",
                 "%context% 表示：我不想待在这里。",
                 "%player% 摆 %context% 的姿势很专业，可惜位置不对。",
                 "又一块 %context% 被 %player% 安排了。"
@@ -215,7 +403,7 @@ public class TauntManager {
                 "%player% 死在了 %context% 手里，真是精彩。",
                 "又死了？%player% 你这是在刷死亡次数吗？",
                 "%context% 表示：这波不亏。",
-                "%player% 用生命诠释了什么叫“送”。",
+                "%player% 用生命诠释了什么叫\"送\"。",
                 "死于 %context%，%player% 你可真行。",
                 "%player% 的死法，可以进教科书了。",
                 "%context% 都没有用力，%player% 就倒了。",
@@ -348,186 +536,5 @@ public class TauntManager {
         ));
 
         return Collections.unmodifiableMap(pools);
-    }
-
-    // ==================== 翻译工具 ====================
-    public static Component blockName(Block block) { return blockName(block.getType()); }
-
-    public static Component blockName(Material material) {
-        NamespacedKey key = material.getKey();
-        return Component.translatable("block." + key.getNamespace() + "." + key.getKey());
-    }
-
-    public static Component entityName(Entity entity) {
-        Component custom = entity.customName();
-        if (custom != null) return custom;
-        NamespacedKey key = entity.getType().getKey();
-        return Component.translatable("entity." + key.getNamespace() + "." + key.getKey());
-    }
-
-    public static Component itemName(ItemStack stack) {
-        NamespacedKey key = stack.getType().getKey();
-        return Component.translatable("item." + key.getNamespace() + "." + key.getKey());
-    }
-
-    // ==================== 冷却与状态 ====================
-    private static final long CLEANUP_INTERVAL_MS = 60_000;
-    private static final long ENTRY_EXPIRE_MS = 5 * 60_000;
-
-    private final Map<UUID, PlayerCooldown> cooldowns = new ConcurrentHashMap<>();
-
-    private static class PlayerCooldown {
-        final Map<String, Long> actions = new ConcurrentHashMap<>();
-        volatile long lastActive = System.currentTimeMillis();
-        volatile long lastGlobalTaunt = 0L;
-    }
-
-    public TauntManager(JavaPlugin plugin) {
-        this.plugin = plugin;
-        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::cleanup,
-                CLEANUP_INTERVAL_MS / 50, CLEANUP_INTERVAL_MS / 50);
-    }
-
-    private void cleanup() {
-        long now = System.currentTimeMillis();
-        cooldowns.entrySet().removeIf(entry -> now - entry.getValue().lastActive > ENTRY_EXPIRE_MS);
-    }
-
-    // ==================== 主入口 ====================
-    public void taunt(Player player, String action, String context) {
-        taunt(player, action, context != null ? Component.text(context) : null);
-    }
-
-    public void taunt(Player player, String action, Component context) {
-        long now = System.currentTimeMillis();
-        PlayerCooldown state = cooldowns.computeIfAbsent(player.getUniqueId(), k -> new PlayerCooldown());
-        state.lastActive = now;
-
-        if (now - state.lastGlobalTaunt < GLOBAL_PLAYER_COOLDOWN_MS) return;
-
-        long cooldown = COOLDOWN_BY_ACTION.getOrDefault(action, 15_000L);
-        Long last = state.actions.get(action);
-        if (last != null && now - last < cooldown) return;
-
-        double chance = CHANCE_BY_ACTION.getOrDefault(action, 1.0);
-        if (chance < 1.0 && ThreadLocalRandom.current().nextDouble() > chance) return;
-
-        // ★ 血月期间，"death" 使用专属文案
-        List<String> pool;
-        if ("death".equals(action) && bloodMoonActive) {
-            pool = BLOOD_MOON_DEATH_MESSAGES;
-        } else {
-            pool = MESSAGE_POOLS.get(action);
-        }
-        if (pool == null || pool.isEmpty()) return;
-
-        state.lastGlobalTaunt = now;
-        state.actions.put(action, now);
-
-        String template = pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
-        Component playerName = Component.text(player.getName(), NamedTextColor.AQUA);
-        Component ctx = context != null ? context : Component.empty();
-
-        Component message = Component.text(template, NamedTextColor.YELLOW)
-                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(playerName))
-                .replaceText(cfg -> cfg.matchLiteral("%context%").replacement(ctx));
-
-        Bukkit.getServer().broadcast(PREFIX.append(message));
-
-        if (isOwner(player)) {
-            scheduleApology(player);
-        }
-    }
-
-    private void scheduleApology(Player owner) {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (!owner.isOnline()) return;
-            String template = APOLOGY_MESSAGES.get(
-                    ThreadLocalRandom.current().nextInt(APOLOGY_MESSAGES.size()));
-            Component ownerName = Component.text(owner.getName(), NamedTextColor.GOLD);
-            Component apologyMsg = Component.text(template, NamedTextColor.RED)
-                    .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerName));
-            Bukkit.getServer().broadcast(APOLOGY_PREFIX.append(apologyMsg));
-        }, APOLOGY_DELAY_MS / 50);
-    }
-
-    // ==================== 服主功能 ====================
-    public static boolean isOwner(Player player) {
-        return player != null && OWNER_NAME.equalsIgnoreCase(player.getName());
-    }
-
-    public void welcomeOwner(Player owner) {
-        if (owner == null || !owner.isOnline()) return;
-
-        String template = OWNER_WELCOME_MESSAGES.get(
-                ThreadLocalRandom.current().nextInt(OWNER_WELCOME_MESSAGES.size()));
-        Component ownerName = Component.text(owner.getName(), NamedTextColor.GOLD);
-        Component message = Component.text(template, NamedTextColor.YELLOW)
-                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerName));
-        Bukkit.getServer().broadcast(OWNER_PREFIX.append(message));
-
-        Title.Times times = Title.Times.times(
-                Duration.ofMillis(500), Duration.ofMillis(2500), Duration.ofMillis(500));
-        Title title = Title.title(
-                Component.text(OWNER_TITLE, NamedTextColor.GOLD),
-                Component.text(OWNER_SUBTITLE, NamedTextColor.YELLOW),
-                times);
-
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            p.showTitle(title);
-            p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.2f);
-        }
-
-        owner.playSound(owner.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.5f);
-
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (owner.isOnline()) spawnOwnerFireworks(owner);
-        }, 20L);
-    }
-
-    private void spawnOwnerFireworks(Player owner) {
-        double[][] offsets = {{0, 0, 0}, {2, 1, 0}, {-2, 1, 1}};
-        for (double[] offset : offsets) {
-            owner.getWorld().spawn(
-                    owner.getLocation().clone().add(offset[0], offset[1], offset[2]),
-                    Firework.class,
-                    fw -> {
-                        FireworkMeta meta = fw.getFireworkMeta();
-                        meta.addEffect(FireworkEffect.builder()
-                                .withColor(Color.YELLOW, Color.ORANGE)
-                                .withFade(Color.RED)
-                                .with(FireworkEffect.Type.BALL_LARGE)
-                                .trail(true).flicker(true).build());
-                        meta.setPower(1);
-                        fw.setFireworkMeta(meta);
-                    });
-        }
-        owner.getWorld().spawnParticle(Particle.FLAME,
-                owner.getLocation().add(0, 2, 0), 60, 1.5, 1.5, 1.5, 0.02);
-    }
-
-    public void ownerDeath(Player owner, Component cause) {
-        if (owner == null) return;
-        String template = OWNER_DEATH_MESSAGES.get(
-                ThreadLocalRandom.current().nextInt(OWNER_DEATH_MESSAGES.size()));
-        Component ownerName = Component.text(owner.getName(), NamedTextColor.GOLD);
-        Component ctx = cause != null ? cause : Component.text("未知原因");
-
-        Component message = Component.text(template, NamedTextColor.RED)
-                .replaceText(cfg -> cfg.matchLiteral("%player%").replacement(ownerName))
-                .replaceText(cfg -> cfg.matchLiteral("%context%").replacement(ctx));
-        Bukkit.getServer().broadcast(OWNER_DEATH_PREFIX.append(message));
-
-        Title.Times times = Title.Times.times(
-                Duration.ofMillis(500), Duration.ofMillis(2500), Duration.ofMillis(500));
-        Title title = Title.title(
-                Component.text(OWNER_DEATH_TITLE, NamedTextColor.DARK_RED),
-                Component.text(OWNER_DEATH_SUBTITLE, NamedTextColor.RED),
-                times);
-
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            p.showTitle(title);
-            p.playSound(p.getLocation(), Sound.ENTITY_WITHER_SPAWN, 0.6f, 0.5f);
-        }
     }
 }

@@ -13,37 +13,39 @@ import org.bukkit.event.Listener;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.util.Map;
 import java.util.Random;
 
-/**
- * 猜数字：
- * - 每 5 分钟自动开启一局
- * - 服务器随机想一个 1~100 的数
- * - 玩家在聊天栏直接输入数字即可猜
- * - 猜中获奖（默认给肝度）
- */
 public class GuessNumberManager implements Listener {
 
     private final JavaPlugin plugin;
+    private final MessageManager messages;
     private final GrindManager grindManager;
     private final Random random = new Random();
 
-    // ==================== 参数 ====================
-    private static final long ROUND_INTERVAL_MS = 300_000L;   // 5 分钟一局
-    private static final long ROUND_DURATION_MS = 180_000L;   // 每局 3 分钟
-    private static final int MIN_NUMBER = 1;
-    private static final int MAX_NUMBER = 100;
-    private static final int REWARD_GRIND = 100;              // 猜中奖励肝度
+    private long roundIntervalMs;
+    private long roundDurationMs;
+    private int minNumber;
+    private int maxNumber;
+    private int rewardGrind;
 
-    // ==================== 状态 ====================
     private volatile boolean active = false;
     private volatile int target = 0;
     private volatile long endTime = 0;
     private BukkitTask roundTask;
 
-    public GuessNumberManager(JavaPlugin plugin, GrindManager grindManager) {
+    public GuessNumberManager(JavaPlugin plugin, MessageManager messages,
+                              GrindManager grindManager, ConfigManager config) {
         this.plugin = plugin;
+        this.messages = messages;
         this.grindManager = grindManager;
+
+        this.roundIntervalMs = config.getLong("guess-number.round-interval-ms", 300000);
+        this.roundDurationMs = config.getLong("guess-number.round-duration-ms", 180000);
+        this.minNumber = config.getInt("guess-number.min-number", 1);
+        this.maxNumber = config.getInt("guess-number.max-number", 100);
+        this.rewardGrind = config.getInt("guess-number.reward-grind", 100);
+
         startSchedule();
     }
 
@@ -53,11 +55,10 @@ public class GuessNumberManager implements Listener {
     }
 
     private void startSchedule() {
-        // 插件启动后 30 秒开第一局，之后每 5 分钟一局
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             startRound();
             roundTask = Bukkit.getScheduler().runTaskTimer(plugin,
-                    this::startRound, ROUND_INTERVAL_MS / 50, ROUND_INTERVAL_MS / 50);
+                    this::startRound, roundIntervalMs / 50, roundIntervalMs / 50);
         }, 600L);
     }
 
@@ -65,26 +66,29 @@ public class GuessNumberManager implements Listener {
         if (active) return;
 
         active = true;
-        target = random.nextInt(MAX_NUMBER - MIN_NUMBER + 1) + MIN_NUMBER;
-        endTime = System.currentTimeMillis() + ROUND_DURATION_MS;
+        target = random.nextInt(maxNumber - minNumber + 1) + minNumber;
+        endTime = System.currentTimeMillis() + roundDurationMs;
 
-        Bukkit.getServer().broadcast(Component.text("═══════════════════════", NamedTextColor.GOLD));
-        Bukkit.getServer().broadcast(Component.text("🎲 猜数字游戏开始！", NamedTextColor.YELLOW));
-        Bukkit.getServer().broadcast(Component.text("我想了一个 " + MIN_NUMBER + "~" + MAX_NUMBER
-                + " 之间的数字", NamedTextColor.AQUA));
-        Bukkit.getServer().broadcast(Component.text("在聊天栏直接输入数字即可猜，猜中奖励 "
-                + REWARD_GRIND + " 肝度", NamedTextColor.GREEN));
-        Bukkit.getServer().broadcast(Component.text("限时 3 分钟，加油！", NamedTextColor.GRAY));
-        Bukkit.getServer().broadcast(Component.text("═══════════════════════", NamedTextColor.GOLD));
+        // ★ 消息接入
+        messages.broadcast("guess-number.header");
+        messages.broadcast("guess-number.start");
+        messages.broadcast("guess-number.range", Map.of(
+                "{min}", String.valueOf(minNumber),
+                "{max}", String.valueOf(maxNumber)
+        ));
+        messages.broadcast("guess-number.hint", Map.of(
+                "{reward}", String.valueOf(rewardGrind)
+        ));
+        messages.broadcast("guess-number.time-limit");
+        messages.broadcast("guess-number.footer");
 
         for (Player p : Bukkit.getOnlinePlayers()) {
             p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.5f);
         }
 
-        // 到时结束
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (active) endRound(false);
-        }, ROUND_DURATION_MS / 50);
+        }, roundDurationMs / 50);
     }
 
     private void endRound(boolean guessed) {
@@ -92,15 +96,14 @@ public class GuessNumberManager implements Listener {
         active = false;
 
         if (!guessed) {
-            Bukkit.getServer().broadcast(Component.text("⏰ 猜数字游戏结束！答案是 ", NamedTextColor.RED)
-                    .append(Component.text(String.valueOf(target), NamedTextColor.GOLD)));
+            messages.broadcast("guess-number.timeout", Map.of(
+                    "{number}", String.valueOf(target)
+            ));
             for (Player p : Bukkit.getOnlinePlayers()) {
                 p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 0.5f);
             }
         }
     }
-
-    // ==================== 聊天监听 ====================
 
     @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
     public void onChat(AsyncChatEvent event) {
@@ -108,25 +111,23 @@ public class GuessNumberManager implements Listener {
 
         Player player = event.getPlayer();
         String msg = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
-
         if (msg.startsWith("/")) return;
 
-        // 尝试解析为数字
         int guess;
         try {
             guess = Integer.parseInt(msg);
         } catch (NumberFormatException e) {
-            return; // 不是数字，不处理
-        }
-
-        // 范围检查
-        if (guess < MIN_NUMBER || guess > MAX_NUMBER) {
-            player.sendMessage(Component.text("数字必须在 " + MIN_NUMBER + "~" + MAX_NUMBER
-                    + " 之间", NamedTextColor.RED));
             return;
         }
 
-        // 主线程处理
+        if (guess < minNumber || guess > maxNumber) {
+            messages.send(player, "guess-number.out-of-range", Map.of(
+                    "{min}", String.valueOf(minNumber),
+                    "{max}", String.valueOf(maxNumber)
+            ));
+            return;
+        }
+
         final int finalGuess = guess;
         Bukkit.getScheduler().runTask(plugin, () -> handleGuess(player, finalGuess));
     }
@@ -135,23 +136,29 @@ public class GuessNumberManager implements Listener {
         if (!active) return;
 
         if (guess == target) {
-            // 猜中
-            player.sendMessage(Component.text("🎉 恭喜你猜中了！答案是 " + target, NamedTextColor.GOLD));
+            messages.send(player, "guess-number.win", Map.of(
+                    "{number}", String.valueOf(target)
+            ));
             player.playSound(player.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
 
-            // 发奖励
-            grindManager.addPointsDirect(player, REWARD_GRIND);
+            if (grindManager != null) {
+                grindManager.addPointsDirect(player, rewardGrind);
+            }
 
-            Bukkit.getServer().broadcast(Component.text("🎉 ", NamedTextColor.GOLD)
-                    .append(Component.text(player.getName(), NamedTextColor.AQUA))
-                    .append(Component.text(" 猜中了数字 " + target + "，获得 "
-                            + REWARD_GRIND + " 肝度奖励！", NamedTextColor.GREEN)));
+            messages.broadcast("guess-number.win-broadcast", Map.of(
+                    "{player}", player.getName(),
+                    "{number}", String.valueOf(target),
+                    "{reward}", String.valueOf(rewardGrind)
+            ));
+
+            TauntUtils.increment(plugin, player, "guess_wins", 1);
+            TauntUtils.unlock(plugin, player, AchievementManager.Ach.FIRST_GUESS_WIN);
 
             active = false;
         } else if (guess < target) {
-            player.sendMessage(Component.text("⬆ 太小了，再大一点", NamedTextColor.YELLOW));
+            messages.send(player, "guess-number.too-small");
         } else {
-            player.sendMessage(Component.text("⬇ 太大了，再小一点", NamedTextColor.YELLOW));
+            messages.send(player, "guess-number.too-big");
         }
     }
 }
